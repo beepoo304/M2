@@ -1,4 +1,12 @@
-# M² — MeshCore Live Monitor
+<p align="center">
+  <img src="assets/m2-logo.svg" width="144" alt="M² application logo">
+</p>
+
+<h1 align="center">M² — MeshCore Live Monitor</h1>
+
+<p align="center">
+  See the MeshCore network as it happens.
+</p>
 
 M² is a compact Android monitor for the public MeshCore live network. It turns the live packet stream into a readable view of messages, routes, repeaters and signal data — useful both for everyday monitoring and for diagnosing why a packet reached one part of the mesh but not another.
 

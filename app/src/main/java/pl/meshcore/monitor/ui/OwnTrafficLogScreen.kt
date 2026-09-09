@@ -39,7 +39,7 @@ fun OwnTrafficLogScreen(
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
             Column {
                 Text("MY DEVICES LOG", fontWeight = FontWeight.Bold)
-                Text("Newest first · ${packets.size} / 100", style = MaterialTheme.typography.labelSmall,
+                Text("Newest first · ${packets.size} / 250", style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.weight(1f))

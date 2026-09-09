@@ -77,7 +77,7 @@ class OwnTrafficLogStore(context: Context) {
     }
 
     private companion object {
-        const val MAX_ENTRIES = 100
+        const val MAX_ENTRIES = 250
         const val ALIAS = "m2_own_log_key"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
     }

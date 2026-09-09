@@ -57,7 +57,7 @@ class OwnTrafficLogViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private companion object {
-        const val MAX_ENTRIES = 100
+        const val MAX_ENTRIES = 250
         const val PERSIST_INTERVAL_MS = 10_000L
     }
 }

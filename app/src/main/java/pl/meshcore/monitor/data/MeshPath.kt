@@ -2,9 +2,19 @@ package pl.meshcore.monitor.data
 
 object MeshPath {
     fun normalize(parts: List<String>): List<String> {
-        val clean = parts.map { it.trim().uppercase() }.filter(String::isNotBlank)
-        return if (clean.isNotEmpty() && clean.all { it.length == 2 }) {
-            clean.chunked(2).map { it.joinToString("") }.filter { it.length == 4 }
-        } else clean
+        // The API already returns one entry per hop. Its width follows the
+        // packet's path-hash mode and can be 1, 2 or 3 bytes. Combining
+        // adjacent one-byte entries corrupts the route and can drop its final
+        // hop (for example F4, the one-byte form of a key starting with F480).
+        return parts.map { it.trim().uppercase() }.filter(String::isNotBlank)
     }
+
+    fun matchingKeys(route: List<String>, publicKeys: Set<String>): Map<String, List<String>> =
+        route.distinct().mapNotNull { hop ->
+            val matches = publicKeys.filter { key -> key.startsWith(hop, ignoreCase = true) }
+            if (matches.isEmpty()) null else hop to matches
+        }.toMap()
+
+    fun hashSizeBytes(routes: List<List<String>>): Int? = routes.asSequence().flatten()
+        .map { it.length / 2 }.filter { it > 0 }.distinct().singleOrNull()
 }

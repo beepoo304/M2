@@ -60,6 +60,8 @@ import org.json.JSONObject
 
 @Composable internal fun PacketDetailsDialog(packet: LivePacket, onDismiss: () -> Unit) {
     val context = LocalContext.current; val key = packet.publicKey.orEmpty().ifBlank { packet.observerPublicKey }
+    val config by ConnectionConfigBus.config.collectAsState()
+    var showAllRoutes by remember(packet.id) { mutableStateOf(false) }
     val networkDetails by produceState<PacketObservationDetails?>(null, packet.id) {
         value = PacketObservationRepository.load(packet.id)
     }
@@ -78,13 +80,26 @@ import org.json.JSONObject
                 item { Text(if (message.isNotBlank()) message else "Message content is not available") }
             }
             val routes = networkDetails?.routes.orEmpty()
+            val trackedRoutes = routes.filter { MeshPath.matchingKeys(it, config.ownPublicKeys).isNotEmpty() }
+            val displayedRoutes = if (!showAllRoutes && trackedRoutes.isNotEmpty()) trackedRoutes else routes
             if (networkDetails == null) {
                 item { Text("Route: ${packet.path.takeIf { it.isNotEmpty() }?.joinToString(" → ") ?: "Direct / unavailable"}") }
             } else if (routes.isEmpty()) {
                 item { Text("Observed routes: Direct") }
             } else {
-                item { Text("Observed routes (${routes.size})", fontWeight = FontWeight.Medium) }
-                items(routes) { route -> Text(route.joinToString(" → "), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+                item { Text(if (trackedRoutes.isNotEmpty() && !showAllRoutes) "Tracked routes (${trackedRoutes.size})" else "Observed routes (${routes.size})", fontWeight = FontWeight.Medium) }
+                MeshPath.hashSizeBytes(routes)?.let { bytes -> item { Text("Path hashes: $bytes ${if (bytes == 1) "byte" else "bytes"} per hop", style = MaterialTheme.typography.bodySmall) } }
+                items(displayedRoutes) { route ->
+                    Column {
+                        Text(route.joinToString(" → "), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        MeshPath.matchingKeys(route, config.ownPublicKeys).forEach { (hop, keys) ->
+                            Text("$hop matches ${keys.joinToString { it.take(hop.length.coerceAtLeast(4)).uppercase() + "…" }}", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                if (trackedRoutes.isNotEmpty() && trackedRoutes.size < routes.size) item {
+                    TextButton(onClick = { showAllRoutes = !showAllRoutes }) { Text(if (showAllRoutes) "Show tracked routes" else "Show all ${routes.size} routes") }
+                }
             }
             item { Text("Hops: ${routes.maxOfOrNull { it.size } ?: packet.path.size} · Seen: ${networkDetails?.observationCount ?: packet.observationCount}") }
             item { Text("Signal: ${packet.rssi?.let { "$it dBm" } ?: "—"} · SNR: ${packet.snr?.let { "$it dB" } ?: "—"}") }

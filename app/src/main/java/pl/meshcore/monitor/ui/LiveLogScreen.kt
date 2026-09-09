@@ -60,6 +60,9 @@ import org.json.JSONObject
 
 @Composable internal fun PacketDetailsDialog(packet: LivePacket, onDismiss: () -> Unit) {
     val context = LocalContext.current; val key = packet.publicKey.orEmpty().ifBlank { packet.observerPublicKey }
+    val networkDetails by produceState<PacketObservationDetails?>(null, packet.id) {
+        value = PacketObservationRepository.load(packet.id)
+    }
     val decoded = remember(packet.decodedJson) {
         packet.decodedJson.takeIf { it.startsWith("{") }?.let { runCatching { JSONObject(it) }.getOrNull() }
     }
@@ -74,8 +77,16 @@ import org.json.JSONObject
                 if (sender.isNotBlank()) item { Text("Sender: $sender") }
                 item { Text(if (message.isNotBlank()) message else "Message content is not available") }
             }
-            item { Text("Route: ${packet.path.takeIf { it.isNotEmpty() }?.joinToString(" → ") ?: "Direct / unavailable"}") }
-            item { Text("Hops: ${packet.path.size} · Seen: ${packet.observationCount}") }
+            val routes = networkDetails?.routes.orEmpty()
+            if (networkDetails == null) {
+                item { Text("Route: ${packet.path.takeIf { it.isNotEmpty() }?.joinToString(" → ") ?: "Direct / unavailable"}") }
+            } else if (routes.isEmpty()) {
+                item { Text("Observed routes: Direct") }
+            } else {
+                item { Text("Observed routes (${routes.size})", fontWeight = FontWeight.Medium) }
+                items(routes) { route -> Text(route.joinToString(" → "), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+            }
+            item { Text("Hops: ${routes.maxOfOrNull { it.size } ?: packet.path.size} · Seen: ${networkDetails?.observationCount ?: packet.observationCount}") }
             item { Text("Signal: ${packet.rssi?.let { "$it dBm" } ?: "—"} · SNR: ${packet.snr?.let { "$it dB" } ?: "—"}") }
             item { Text("Public key", fontWeight = FontWeight.Medium); Text(key.ifBlank { "Not carried by this packet" }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
             item { Text("Observer: ${packet.observerName}") }

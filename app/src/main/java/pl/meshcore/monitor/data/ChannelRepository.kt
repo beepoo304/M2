@@ -38,10 +38,10 @@ class ChannelRepository(context: Context) {
         val cached = store.loadMessages(channel)
         runCatching {
             val remote = loadRemoteMessages(channel.name)
-            val fresh = if (remote.isNotEmpty() || channel.secret.isBlank()) remote else {
-                val secret = ChannelCrypto.decodeHex(channel.secret) ?: return@runCatching cached
-                decryptRecentPackets(channel, secret)
-            }
+            val local = if (channel.secret.isNotBlank()) {
+                ChannelCrypto.decodeHex(channel.secret)?.let { decryptRecentPackets(channel, it) }.orEmpty()
+            } else emptyList()
+            val fresh = (remote + local).distinctBy { it.id }
             sortMessages(store.mergeMessages(channel, fresh))
         }.getOrDefault(sortMessages(cached))
     }

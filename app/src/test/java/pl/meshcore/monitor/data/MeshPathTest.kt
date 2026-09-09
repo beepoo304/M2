@@ -37,4 +37,10 @@ class MeshPathTest {
         assertEquals(emptyList<String>(), MeshPath.endingKeys(listOf("7D", "B2", "BE"), setOf(b282)))
         assertEquals(listOf(b282), MeshPath.endingKeys(listOf("7D", "19", "B2"), setOf(b282)))
     }
+
+    @Test fun oneByteEndingIsNotReliableWithoutObserverConfirmation() {
+        val key = "f4809c7817bc777124f638d32008af197415ba1240c36c186f6ec80619775c68"
+        assertEquals(false, MeshPath.hasReliableEnding(listOf("7D", "F4"), setOf(key)))
+        assertEquals(true, MeshPath.hasReliableEnding(listOf("B200", "F480"), setOf(key)))
+    }
 }

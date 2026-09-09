@@ -20,6 +20,14 @@ object MeshPath {
         return publicKeys.filter { it.startsWith(lastHop, ignoreCase = true) }
     }
 
+    fun hasReliableEnding(route: List<String>, publicKeys: Set<String>): Boolean =
+        route.lastOrNull()?.length?.let { it >= 4 } == true && endingKeys(route, publicKeys).isNotEmpty()
+
+    fun hasExactObserver(route: ObservedRoute, publicKeys: Set<String>): Boolean =
+        route.observerPublicKey.isNotBlank() && publicKeys.any {
+            it.equals(route.observerPublicKey, ignoreCase = true)
+        }
+
     fun hashSizeBytes(routes: List<List<String>>): Int? = routes.asSequence().flatten()
         .map { it.length / 2 }.filter { it > 0 }.distinct().singleOrNull()
 }

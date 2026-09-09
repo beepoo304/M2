@@ -20,4 +20,24 @@ class PacketObservationRepositoryTest {
         assertTrue(result.routes.any { it.path == listOf("B200", "86E7", "F480") && it.path.size == 3 && it.rssi == -119 })
         assertTrue(result.routes.any { it.path == listOf("B200", "86E7", "0652") && it.snr == -5.0 })
     }
+
+    @Test fun parsesOneByteRouteWithoutCombiningOrDroppingFinalHop() {
+        val result = PacketObservationRepository.parse(JSONObject("""
+            {"observations":[
+              {"path_json":"[\"7D\",\"19\",\"15\",\"CE\",\"5C\",\"B2\",\"F4\"]","observer_name":"F480"}
+            ]}
+        """))
+        assertEquals(listOf("7D", "19", "15", "CE", "5C", "B2", "F4"), result.routes.single().path)
+    }
+
+    @Test fun preservesSamePathObservedByDifferentDevices() {
+        val result = PacketObservationRepository.parse(JSONObject("""
+            {"observations":[
+              {"path_json":"[\"7D\",\"19\"]","observer_name":"other","observer_id":"AAAA"},
+              {"path_json":"[\"7D\",\"19\"]","observer_name":"tracked","observer_id":"F480"}
+            ]}
+        """))
+        assertEquals(2, result.routes.size)
+        assertTrue(result.routes.any { it.observerPublicKey == "F480" })
+    }
 }

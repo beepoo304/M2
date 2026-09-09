@@ -2,13 +2,19 @@ package pl.meshcore.monitor.data
 
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
@@ -30,6 +36,7 @@ data class LivePacket(
     val rawHex: String,
     val publicKey: String?,
     val ownTraffic: Boolean = false,
+    val possibleOwnTraffic: Boolean = false,
     val timestamp: String = "",
     val decodedJson: String = "",
     val path: List<String> = emptyList(),
@@ -74,6 +81,7 @@ class CoreScopeRepository(
     private val stopped = AtomicBoolean(false)
     private var socket: WebSocket? = null
     @Volatile private var lastSuccessfulFetch = 0L
+    private val observationMatchCache = ConcurrentHashMap<String, ObservationMatch>()
 
     override suspend fun run() {
         stopped.set(false)
@@ -135,9 +143,10 @@ class CoreScopeRepository(
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) error("HTTP ${response.code}")
                 val source = JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") ?: return@use
-                val packets = buildList {
+                val parsedPackets = buildList {
                     for (index in 0 until minOf(source.length(), 100)) parsePacket(source.optJSONObject(index))?.let(::add)
                 }.distinctBy { it.id }.take(100)
+                val packets = enrichOwnTraffic(parsedPackets)
                 lastSuccessfulFetch = System.currentTimeMillis()
                 _state.value = _state.value.copy(packets = packets, connection = ConnectionState.CONNECTED, error = null, revision = _state.value.revision + 1)
             }
@@ -146,6 +155,46 @@ class CoreScopeRepository(
             Log.e("M2Live", "Packet refresh failed", error)
             if (System.currentTimeMillis() - lastSuccessfulFetch >= 6_000) _state.value = _state.value.copy(connection = ConnectionState.ERROR, error = "Live API unavailable — retrying")
             false
+        }
+    }
+
+    private suspend fun enrichOwnTraffic(packets: List<LivePacket>): List<LivePacket> {
+        if (ownPublicKeys.isEmpty()) return packets
+
+        val activeIds = packets.mapTo(mutableSetOf(), LivePacket::id)
+        observationMatchCache.keys.retainAll(activeIds)
+        val now = System.currentTimeMillis()
+        val semaphore = Semaphore(MAX_OBSERVATION_REQUESTS)
+
+        return coroutineScope {
+            packets.map { packet ->
+                async {
+                    if (packet.ownTraffic || packet.observationCount <= 1) return@async packet
+
+                    val cached = observationMatchCache[packet.id]
+                    val cacheIsFresh = cached != null &&
+                        cached.observationCount == packet.observationCount &&
+                        (cached.match.confirmed || now - cached.checkedAt < NEGATIVE_MATCH_TTL_MS)
+                    val match = if (cacheIsFresh) {
+                        cached.match
+                    } else {
+                        semaphore.withPermit {
+                            val details = PacketObservationRepository.load(packet.id)
+                            OwnTrafficClassifier.classify(details, ownPublicKeys).also { result ->
+                                observationMatchCache[packet.id] = ObservationMatch(
+                                    observationCount = packet.observationCount,
+                                    match = result,
+                                    checkedAt = now,
+                                )
+                            }
+                        }
+                    }
+                    packet.copy(
+                        ownTraffic = packet.ownTraffic || match.confirmed,
+                        possibleOwnTraffic = !packet.ownTraffic && !match.confirmed && match.possible,
+                    )
+                }
+            }.awaitAll()
         }
     }
 
@@ -182,6 +231,8 @@ class CoreScopeRepository(
                 decoded?.optString("sender").orEmpty().trim().lowercase() in ownNodeNames ||
                 decoded?.optString("name").orEmpty().trim().lowercase() in ownNodeNames ||
                 TrackedMention.contains(decoded?.optString("text").orEmpty(), ownNodeNames),
+            possibleOwnTraffic = path.lastOrNull()?.length == 2 &&
+                MeshPath.endingKeys(path, ownPublicKeys).isNotEmpty(),
             timestamp = json.optString("timestamp"), decodedJson = decoded?.toString().orEmpty(), path = path,
             routeType = json.optNullableInt("route_type"), rssi = json.optNullableInt("rssi"), snr = json.optNullableDouble("snr"),
             observationCount = json.optInt("observation_count", 1), firstSeen = json.optString("first_seen"),
@@ -224,7 +275,37 @@ class CoreScopeRepository(
         6 -> "GROUP DATA"; 7 -> "ANON REQ"; 8 -> "PATH"; 9 -> "TRACE"; 10 -> "MULTIPART"; 11 -> "CONTROL"
         15 -> "RAW CUSTOM"; else -> "UNKNOWN $type"
     }
+
+    private data class ObservationMatch(
+        val observationCount: Int,
+        val match: OwnTrafficMatch,
+        val checkedAt: Long,
+    )
+
+    private companion object {
+        const val MAX_OBSERVATION_REQUESTS = 6
+        const val NEGATIVE_MATCH_TTL_MS = 30_000L
+    }
 }
+
+internal object OwnTrafficClassifier {
+    fun classify(details: PacketObservationDetails, ownPublicKeys: Set<String>): OwnTrafficMatch {
+        val confirmed = details.routes.any { route ->
+            MeshPath.hasExactObserver(route, ownPublicKeys) ||
+                MeshPath.hasReliableEnding(route.path, ownPublicKeys)
+        }
+        val possible = !confirmed && details.routes.any { route ->
+            route.path.lastOrNull()?.length == 2 &&
+                MeshPath.endingKeys(route.path, ownPublicKeys).isNotEmpty()
+        }
+        return OwnTrafficMatch(confirmed, possible)
+    }
+
+    fun matches(details: PacketObservationDetails, ownPublicKeys: Set<String>): Boolean =
+        classify(details, ownPublicKeys).confirmed
+}
+
+internal data class OwnTrafficMatch(val confirmed: Boolean, val possible: Boolean)
 
 internal object TrackedMention {
     fun contains(text: String, nodeNames: Set<String>): Boolean {

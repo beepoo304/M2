@@ -51,7 +51,8 @@ object PacketObservationRepository {
                     snr = observation.optNullableDouble("snr"),
                 ))
             }
-        }.distinctBy { it.path }.sortedWith(compareBy<ObservedRoute> { it.path.size }.thenBy { it.path.joinToString() })
+        }.distinctBy { it.path to it.observerPublicKey.lowercase() }
+            .sortedWith(compareBy<ObservedRoute> { it.path.size }.thenBy { it.path.joinToString() })
         return PacketObservationDetails(routes, root.optInt("observation_count", observations.length()))
     }
 }

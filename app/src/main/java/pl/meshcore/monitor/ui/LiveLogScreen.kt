@@ -51,7 +51,11 @@ import org.json.JSONObject
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp)) }
         PullToRefreshBox(refreshing, vm::refresh, Modifier.fillMaxSize()) {
             LazyColumn(Modifier.fillMaxSize(), state = listState) { items(state.packets, key = { it.id }) { packet ->
-                val color = if (packet.ownTraffic) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                val color = when {
+                    packet.ownTraffic -> MaterialTheme.colorScheme.primary
+                    packet.possibleOwnTraffic -> Color(0xFFF0A84B)
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
                 Column(Modifier.fillMaxWidth().clickable { selected = packet }.padding(horizontal = 16.dp, vertical = 10.dp)) {
                     Row { Text(packet.time, color = color, fontFamily = FontFamily.Monospace); Spacer(Modifier.weight(1f)); Text(packet.typeLabel, color = color) }
                     Text(packet.nodeName ?: packet.observerName, color = color, fontWeight = FontWeight.Medium)
@@ -95,18 +99,39 @@ import org.json.JSONObject
                 MeshPath.hashSizeBytes(routes.map { it.path })?.let { bytes -> item { Text("Path hashes: $bytes ${if (bytes == 1) "byte" else "bytes"} per hop", style = MaterialTheme.typography.bodySmall) } }
                 items(displayedRoutes) { route ->
                     Column {
-                        val trackedEnding = MeshPath.endingKeys(route.path, config.ownPublicKeys).isNotEmpty()
+                        val endingKeys = MeshPath.endingKeys(route.path, config.ownPublicKeys)
+                        val exactObserver = MeshPath.hasExactObserver(route, config.ownPublicKeys)
+                        val reliableEnding = MeshPath.hasReliableEnding(route.path, config.ownPublicKeys)
+                        val confirmed = exactObserver || reliableEnding
+                        val possibleOneByte = !confirmed && route.path.lastOrNull()?.length == 2 && endingKeys.isNotEmpty()
                         val highlightedRoute = buildAnnotatedString {
                             route.path.forEachIndexed { index, hop ->
                                 if (index > 0) append(" → ")
-                                if (trackedEnding && index == route.path.lastIndex) {
-                                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)) { append(hop) }
+                                if ((confirmed || possibleOneByte) && index == route.path.lastIndex) {
+                                    val hopColor = if (confirmed) MaterialTheme.colorScheme.primary else Color(0xFFF0A84B)
+                                    withStyle(SpanStyle(color = hopColor, fontWeight = FontWeight.Bold)) { append(hop) }
                                 } else append(hop)
                             }
                         }
                         Text(highlightedRoute, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                         Text("${route.path.size} hops · ${route.rssi?.let { "$it dBm" } ?: "RSSI —"} · ${route.snr?.let { "$it dB" } ?: "SNR —"}", style = MaterialTheme.typography.labelSmall)
-                        Text("Observed by ${route.observerName}", style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            "Observed by ${route.observerName}",
+                            color = if (exactObserver) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                            fontWeight = if (exactObserver) FontWeight.Bold else FontWeight.Normal,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        if (exactObserver) Text(
+                            "Confirmed tracked observer",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        if (possibleOneByte) Text(
+                            "Possible tracked key: ${endingKeys.joinToString { it.take(4).uppercase() + "…" }} (1-byte hash)",
+                            color = Color(0xFFF0A84B),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                 }
                 if (trackedRoutes.isNotEmpty() && trackedRoutes.size < routes.size) item {

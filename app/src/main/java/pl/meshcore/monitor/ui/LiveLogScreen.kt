@@ -19,8 +19,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import pl.meshcore.monitor.data.*
@@ -29,6 +32,7 @@ import org.json.JSONObject
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun LiveLogScreen(modifier: Modifier, vm: LiveLogViewModel = viewModel()) {
     val state by vm.state.collectAsState(); val refreshing by vm.refreshing.collectAsState()
+    val config by ConnectionConfigBus.config.collectAsState()
     var selected by remember { mutableStateOf<LivePacket?>(null) }; val listState = rememberLazyListState()
     LaunchedEffect(state.packets.firstOrNull()?.id) { if (state.packets.isNotEmpty()) listState.animateScrollToItem(0) }
     val rotation by rememberInfiniteTransition(label = "live").animateFloat(0f, 360f,
@@ -51,7 +55,7 @@ import org.json.JSONObject
                 Column(Modifier.fillMaxWidth().clickable { selected = packet }.padding(horizontal = 16.dp, vertical = 10.dp)) {
                     Row { Text(packet.time, color = color, fontFamily = FontFamily.Monospace); Spacer(Modifier.weight(1f)); Text(packet.typeLabel, color = color) }
                     Text(packet.nodeName ?: packet.observerName, color = color, fontWeight = FontWeight.Medium)
-                    Text(packet.detail, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall)
+                    TrackedNameText(packet.detail, config.ownNodeNames, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall)
                 }; HorizontalDivider()
             } }
         }
@@ -77,10 +81,10 @@ import org.json.JSONObject
                 val message = decoded?.optString("text").orEmpty()
                 item { Text("Channel: ${channel.ifBlank { "Private channel" }}", fontWeight = FontWeight.Medium) }
                 if (sender.isNotBlank()) item { Text("Sender: $sender") }
-                item { Text(if (message.isNotBlank()) message else "Message content is not available") }
+                item { TrackedNameText(if (message.isNotBlank()) message else "Message content is not available", config.ownNodeNames) }
             }
             val routes = networkDetails?.routes.orEmpty()
-            val trackedRoutes = routes.filter { MeshPath.matchingKeys(it, config.ownPublicKeys).isNotEmpty() }
+            val trackedRoutes = routes.filter { MeshPath.endingKeys(it.path, config.ownPublicKeys).isNotEmpty() }
             val displayedRoutes = if (!showAllRoutes && trackedRoutes.isNotEmpty()) trackedRoutes else routes
             if (networkDetails == null) {
                 item { Text("Route: ${packet.path.takeIf { it.isNotEmpty() }?.joinToString(" → ") ?: "Direct / unavailable"}") }
@@ -88,21 +92,29 @@ import org.json.JSONObject
                 item { Text("Observed routes: Direct") }
             } else {
                 item { Text(if (trackedRoutes.isNotEmpty() && !showAllRoutes) "Tracked routes (${trackedRoutes.size})" else "Observed routes (${routes.size})", fontWeight = FontWeight.Medium) }
-                MeshPath.hashSizeBytes(routes)?.let { bytes -> item { Text("Path hashes: $bytes ${if (bytes == 1) "byte" else "bytes"} per hop", style = MaterialTheme.typography.bodySmall) } }
+                MeshPath.hashSizeBytes(routes.map { it.path })?.let { bytes -> item { Text("Path hashes: $bytes ${if (bytes == 1) "byte" else "bytes"} per hop", style = MaterialTheme.typography.bodySmall) } }
                 items(displayedRoutes) { route ->
                     Column {
-                        Text(route.joinToString(" → "), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                        MeshPath.matchingKeys(route, config.ownPublicKeys).forEach { (hop, keys) ->
-                            Text("$hop matches ${keys.joinToString { it.take(hop.length.coerceAtLeast(4)).uppercase() + "…" }}", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                        val trackedEnding = MeshPath.endingKeys(route.path, config.ownPublicKeys).isNotEmpty()
+                        val highlightedRoute = buildAnnotatedString {
+                            route.path.forEachIndexed { index, hop ->
+                                if (index > 0) append(" → ")
+                                if (trackedEnding && index == route.path.lastIndex) {
+                                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)) { append(hop) }
+                                } else append(hop)
+                            }
                         }
+                        Text(highlightedRoute, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                        Text("${route.path.size} hops · ${route.rssi?.let { "$it dBm" } ?: "RSSI —"} · ${route.snr?.let { "$it dB" } ?: "SNR —"}", style = MaterialTheme.typography.labelSmall)
+                        Text("Observed by ${route.observerName}", style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 if (trackedRoutes.isNotEmpty() && trackedRoutes.size < routes.size) item {
                     TextButton(onClick = { showAllRoutes = !showAllRoutes }) { Text(if (showAllRoutes) "Show tracked routes" else "Show all ${routes.size} routes") }
                 }
             }
-            item { Text("Hops: ${routes.maxOfOrNull { it.size } ?: packet.path.size} · Seen: ${networkDetails?.observationCount ?: packet.observationCount}") }
-            item { Text("Signal: ${packet.rssi?.let { "$it dBm" } ?: "—"} · SNR: ${packet.snr?.let { "$it dB" } ?: "—"}") }
+            item { Text("Total observations: ${networkDetails?.observationCount ?: packet.observationCount}") }
+            if (networkDetails == null || routes.isEmpty()) item { Text("Signal: ${packet.rssi?.let { "$it dBm" } ?: "—"} · SNR: ${packet.snr?.let { "$it dB" } ?: "—"}") }
             item { Text("Public key", fontWeight = FontWeight.Medium); Text(key.ifBlank { "Not carried by this packet" }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
             item { Text("Observer: ${packet.observerName}") }
             item { Text("Hash: ${packet.hash}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall) }

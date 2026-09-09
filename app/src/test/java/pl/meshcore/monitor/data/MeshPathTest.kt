@@ -31,4 +31,10 @@ class MeshPathTest {
         assertEquals(2, MeshPath.hashSizeBytes(listOf(listOf("B200", "F480"))))
         assertEquals(3, MeshPath.hashSizeBytes(listOf(listOf("C77777", "F4809C"))))
     }
+
+    @Test fun trackedRouteMustEndAtSavedKey() {
+        val b282 = "b282f47b00000000000000000000000000000000000000000000000000000000"
+        assertEquals(emptyList<String>(), MeshPath.endingKeys(listOf("7D", "B2", "BE"), setOf(b282)))
+        assertEquals(listOf(b282), MeshPath.endingKeys(listOf("7D", "19", "B2"), setOf(b282)))
+    }
 }

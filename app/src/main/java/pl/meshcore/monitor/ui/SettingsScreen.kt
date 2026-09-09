@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import pl.meshcore.monitor.BuildConfig
 import pl.meshcore.monitor.data.ConnectionConfig
 import pl.meshcore.monitor.data.ConnectionConfigBus
 
@@ -71,6 +72,12 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
         }
         item {
             HorizontalDivider()
+            Text(
+                "M² version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            )
             var closing by remember { mutableStateOf(false) }
             Button(
                 onClick = { closing = true; onCloseApp() },

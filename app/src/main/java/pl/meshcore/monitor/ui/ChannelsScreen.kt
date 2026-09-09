@@ -116,15 +116,8 @@ import pl.meshcore.monitor.data.WarsawTimeFormatter
     }
 }
 
-@Composable private fun MentionText(text: String, tracked: Set<String>) {
-    val mention = Regex("@\\[([^]]+)]"); val styled = buildAnnotatedString { var position = 0
-        mention.findAll(text).forEach { match -> append(text.substring(position, match.range.first))
-            val own = match.groupValues[1].trim().lowercase() in tracked
-            withStyle(SpanStyle(color = if (own) MaterialTheme.colorScheme.primary else Color(0xFF64B5F6), fontWeight = FontWeight.Medium)) { append(match.value) }
-            position = match.range.last + 1 }
-        append(text.substring(position)) }
-    Text(styled, color = MaterialTheme.colorScheme.onSurfaceVariant)
-}
+@Composable private fun MentionText(text: String, tracked: Set<String>) =
+    TrackedNameText(text, tracked, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
 @Composable private fun ChannelDetailsDialog(details: ChannelMessageDetails, close: () -> Unit) {
     val message = details.message

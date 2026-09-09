@@ -180,7 +180,8 @@ class CoreScopeRepository(
             ownTraffic = publicKey?.lowercase() in ownPublicKeys ||
                 json.optString("observer_id").lowercase() in ownPublicKeys ||
                 decoded?.optString("sender").orEmpty().trim().lowercase() in ownNodeNames ||
-                decoded?.optString("name").orEmpty().trim().lowercase() in ownNodeNames,
+                decoded?.optString("name").orEmpty().trim().lowercase() in ownNodeNames ||
+                TrackedMention.contains(decoded?.optString("text").orEmpty(), ownNodeNames),
             timestamp = json.optString("timestamp"), decodedJson = decoded?.toString().orEmpty(), path = path,
             routeType = json.optNullableInt("route_type"), rssi = json.optNullableInt("rssi"), snr = json.optNullableDouble("snr"),
             observationCount = json.optInt("observation_count", 1), firstSeen = json.optString("first_seen"),
@@ -222,6 +223,16 @@ class CoreScopeRepository(
         0 -> "REQUEST"; 1 -> "RESPONSE"; 2 -> "DIRECT MSG"; 3 -> "ACK"; 4 -> "ADVERT"; 5 -> "CHANNEL MSG"
         6 -> "GROUP DATA"; 7 -> "ANON REQ"; 8 -> "PATH"; 9 -> "TRACE"; 10 -> "MULTIPART"; 11 -> "CONTROL"
         15 -> "RAW CUSTOM"; else -> "UNKNOWN $type"
+    }
+}
+
+internal object TrackedMention {
+    fun contains(text: String, nodeNames: Set<String>): Boolean {
+        val normalized = text.lowercase()
+        return nodeNames.any { rawName ->
+            val name = rawName.trim().lowercase()
+            name.isNotBlank() && (normalized.contains("@[$name]") || normalized.contains("@$name"))
+        }
     }
 }
 

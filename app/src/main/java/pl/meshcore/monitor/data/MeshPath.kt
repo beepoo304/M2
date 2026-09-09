@@ -15,6 +15,11 @@ object MeshPath {
             if (matches.isEmpty()) null else hop to matches
         }.toMap()
 
+    fun endingKeys(route: List<String>, publicKeys: Set<String>): List<String> {
+        val lastHop = route.lastOrNull() ?: return emptyList()
+        return publicKeys.filter { it.startsWith(lastHop, ignoreCase = true) }
+    }
+
     fun hashSizeBytes(routes: List<List<String>>): Int? = routes.asSequence().flatten()
         .map { it.length / 2 }.filter { it > 0 }.distinct().singleOrNull()
 }

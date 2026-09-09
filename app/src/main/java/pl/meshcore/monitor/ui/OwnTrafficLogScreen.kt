@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import pl.meshcore.monitor.data.LivePacket
+import pl.meshcore.monitor.data.ConnectionConfigBus
 
 @Composable
 fun OwnTrafficLogScreen(
@@ -32,6 +33,7 @@ fun OwnTrafficLogScreen(
     viewModel: OwnTrafficLogViewModel = viewModel(),
 ) {
     val packets by viewModel.packets.collectAsState()
+    val config by ConnectionConfigBus.config.collectAsState()
     var selected by remember { mutableStateOf<LivePacket?>(null) }
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
@@ -59,7 +61,8 @@ fun OwnTrafficLogScreen(
                             Text(packet.time, style = MaterialTheme.typography.labelSmall)
                         }
                         Text(packet.nodeName ?: packet.observerName, fontWeight = FontWeight.Medium)
-                        Text(packet.detail, style = MaterialTheme.typography.bodySmall,
+                        TrackedNameText(packet.detail, config.ownNodeNames,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))

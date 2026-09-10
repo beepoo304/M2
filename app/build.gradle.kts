@@ -12,8 +12,8 @@ android {
         applicationId = "pl.meshcore.monitor"
         minSdk = 28
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.1.6"
+        versionCode = 30
+        versionName = "0.1.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -50,6 +50,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")

@@ -16,6 +16,7 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
 import pl.meshcore.monitor.data.DEFAULT_OWN_PUBLIC_KEYS
 import pl.meshcore.monitor.data.SharedLiveRepository
 import pl.meshcore.monitor.data.SecureChannelStore
+import pl.meshcore.monitor.data.ChannelStatisticsEngine
 import pl.meshcore.monitor.ui.MeshCoreApp
 import pl.meshcore.monitor.ui.theme.MeshCoreTheme
 
@@ -31,6 +32,7 @@ class MainActivity : ComponentActivity() {
             savedChannels = SecureChannelStore(this).load(),
         ))
         SharedLiveRepository.start()
+        ChannelStatisticsEngine.start(this)
         ContextCompat.startForegroundService(this, Intent(this, LiveListenerService::class.java))
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)

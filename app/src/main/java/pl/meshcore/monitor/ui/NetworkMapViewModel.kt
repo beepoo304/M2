@@ -18,8 +18,12 @@ data class NetworkMapState(
     val selectedNode: MapNodePoint? = null,
     val loadingNodes: Boolean = true,
     val knownNodeCount: Int = 0,
+    val allRepeaterCount: Int = 0,
     val error: String? = null,
     val exportRoutes: List<List<MapNodePoint>> = emptyList(),
+    val totalDistanceKm: Double = 0.0,
+    val longestRouteKm: Double = 0.0,
+    val longestRoute: List<MapNodePoint> = emptyList(),
 )
 
 class NetworkMapViewModel(application: Application) : AndroidViewModel(application) {
@@ -41,7 +45,8 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
                 if (!session.running) return@collect
                 live.packets.filter { packet ->
                     (packet.id !in baselineCounts || packet.observationCount > (baselineCounts[packet.id] ?: 0)) &&
-                        session.filter.accepts(packet.payloadType) && matchesSelected(packet, current)
+                        session.filter.accepts(packet.payloadType) &&
+                        (matchesSelected(packet, current) || packet.payloadType == 9 && packet.ownTraffic)
                 }.forEach { packet ->
                     if ((processedCounts[packet.id] ?: -1) != packet.observationCount) collectPacket(packet)
                 }
@@ -97,7 +102,16 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun matchesSelected(packet: LivePacket, current: NetworkMapState): Boolean {
         if (packet.publicKey.equals(current.selectedKey, true)) return true
+        if (packet.payloadType == 9 && packet.path.any {
+                it.length >= 4 && current.selectedKey.startsWith(it, ignoreCase = true)
+            }) return true
         val decoded = packet.decodedJson.takeIf { it.startsWith("{") }?.let { runCatching { JSONObject(it) }.getOrNull() }
+        if (packet.payloadType in 0..2) {
+            val sourceHash = decoded?.optString("srcHash").orEmpty()
+            val destinationHash = decoded?.optString("destHash").orEmpty()
+            if ((sourceHash.length == 2 && current.selectedKey.startsWith(sourceHash, true)) ||
+                (destinationHash.length == 2 && current.selectedKey.startsWith(destinationHash, true))) return true
+        }
         val name = current.selectedName.trim()
         return name.isNotBlank() && !name.startsWith("Looking up", true) &&
             (decoded?.optString("sender").equals(name, true) || decoded?.optString("name").equals(name, true))
@@ -111,10 +125,11 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
             if (!session.running || session.key != current.selectedKey) return@launch
             val existing = session.events.mapTo(mutableSetOf()) { "${it.packetId}:${it.path.joinToString()}" }
             val additions = details.routes.mapNotNull { route ->
-                val path = route.path
+                val path = if (packet.payloadType == 9) MeshPath.normalizeTrace(route.path) else route.path
                 val id = "${packet.id}:${path.joinToString()}"
-                if (path.size < 2 || id in existing || path.any { it.length !in setOf(2, 4, 6) }) null
-                else MapRouteEvent(packet.id, packet.hash, packet.payloadType, packet.timestamp, System.currentTimeMillis(), path)
+                if (path.isEmpty() || id in existing || path.any { it.length !in setOf(2, 4, 6) }) null
+                else MapRouteEvent(packet.id, packet.hash, packet.payloadType, packet.timestamp,
+                    System.currentTimeMillis(), path, uncertainAttribution = packet.payloadType in 0..2)
             }
             if (additions.isNotEmpty()) {
                 val updated = session.copy(events = (session.events + additions).takeLast(5000))
@@ -125,7 +140,6 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun rebuild(loading: Boolean = _state.value.loadingNodes) {
         val events = _state.value.session?.events.orEmpty()
-        val edges = MapRouteMapper.edges(events, locatedNodes)
         val selectedHash = _state.value.selectedKey.take(4)
         val selected = (locatedNodes.firstOrNull { it.publicKey.equals(_state.value.selectedKey, true) }
             ?: locatedNodes.firstOrNull {
@@ -133,12 +147,27 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
             })?.let {
             MapNodePoint(it.publicKey.take(4), it.lat, it.lon)
         }
+        val routedEvents = if (selected != null) events.map { event ->
+            if (event.path.firstOrNull().equals(selected.hash, ignoreCase = true)) event
+            else event.copy(path = listOf(selected.hash) + event.path)
+        } else events
+        val metrics = MapRouteMapper.metrics(routedEvents, locatedNodes)
+        val longestSegments = metrics.longestRoute.zipWithNext().mapTo(mutableSetOf()) { (a, b) ->
+            listOf("${a.lat}:${a.lon}", "${b.lat}:${b.lon}").sorted().joinToString("|")
+        }
+        val edges = MapRouteMapper.edges(routedEvents, locatedNodes).map { edge ->
+            val segment = listOf("${edge.from.lat}:${edge.from.lon}", "${edge.to.lat}:${edge.to.lon}").sorted().joinToString("|")
+            edge.copy(longestRoute = segment in longestSegments)
+        }
         val nodes = (edges.flatMap { listOf(it.from, it.to) } + listOfNotNull(selected))
             .distinctBy { "${it.hash}:${it.lat}:${it.lon}" }
         _state.value = _state.value.copy(
             edges = edges, nodes = nodes, selectedNode = selected,
-            exportRoutes = events.sortedBy { it.observedAt }.map { MapRouteMapper.resolve(it.path, locatedNodes) }.filter { it.size > 1 },
+            exportRoutes = routedEvents.sortedBy { it.observedAt }.map { MapRouteMapper.resolve(it.path, locatedNodes) }.filter { it.size > 1 },
+            totalDistanceKm = metrics.totalUniqueKm, longestRouteKm = metrics.longestRouteKm,
             loadingNodes = loading, knownNodeCount = locatedNodes.size,
+            allRepeaterCount = MapNodeRepository.lastAllRepeaterCount,
+            longestRoute = metrics.longestRoute,
         )
     }
 

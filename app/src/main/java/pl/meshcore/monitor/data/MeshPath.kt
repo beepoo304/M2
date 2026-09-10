@@ -1,6 +1,13 @@
 package pl.meshcore.monitor.data
 
 object MeshPath {
+    fun normalizeTrace(parts: List<String>): List<String> {
+        val normalized = normalize(parts)
+        return if (normalized.isNotEmpty() && normalized.size % 2 == 0 && normalized.all { it.length == 2 })
+            normalized.chunked(2).map { it.joinToString("") }
+        else normalized
+    }
+
     fun normalize(parts: List<String>): List<String> {
         // The API already returns one entry per hop. Its width follows the
         // packet's path-hash mode and can be 1, 2 or 3 bytes. Combining

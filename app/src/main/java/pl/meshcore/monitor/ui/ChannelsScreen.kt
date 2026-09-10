@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.*
@@ -19,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.mlkit.vision.barcode.BarcodeScanning
@@ -28,14 +30,28 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import pl.meshcore.monitor.data.ChannelMessageDetails
 import pl.meshcore.monitor.data.ChannelSummary
+import pl.meshcore.monitor.data.TrackedMention
 import pl.meshcore.monitor.data.WarsawTimeFormatter
+import pl.meshcore.monitor.data.ChannelStatisticsEngine
+import pl.meshcore.monitor.data.ChannelStatEvent
+import java.time.Instant
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable internal fun ChannelsScreen(modifier: Modifier, trackedNames: Set<String>, vm: ChannelsViewModel = viewModel()) {
+@Composable internal fun ChannelsScreen(
+    modifier: Modifier,
+    trackedNames: Set<String>,
+    devices: List<SettingsViewModel.DeviceEntry>,
+    vm: ChannelsViewModel = viewModel(),
+) {
     val context = LocalContext.current; val state by vm.state.collectAsState()
     var add by remember { mutableStateOf(false) }; var input by rememberSaveable { mutableStateOf("") }; var invalid by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ChannelSummary?>(null) }
     var renameText by rememberSaveable { mutableStateOf("") }
+    var statistics by remember { mutableStateOf(false) }
+    if (statistics) {
+        ChannelStatisticsScreen(modifier, devices) { statistics = false }
+        return
+    }
     state.selectedMessage?.let { ChannelDetailsDialog(it, vm::closeMessageDetails) }
     LaunchedEffect(state.selected) {
         if (state.selected == null && state.error != null) vm.closeChannel()
@@ -74,11 +90,29 @@ import pl.meshcore.monitor.data.WarsawTimeFormatter
     }
 
     Column(modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (state.selected != null) IconButton(vm::closeChannel) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back") }
-            Text(state.selected?.name ?: "CHANNELS", fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f))
-            Text(if (state.selected == null) "${state.myChannels.size} channels" else "${state.messages.size} messages",
-                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state.selected != null) {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(vm::closeChannel) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back") }
+                    Text(state.selected!!.name, fontWeight = FontWeight.Bold, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(vm::clearSelectedMessages, enabled = state.messages.isNotEmpty()) {
+                        Text("Delete all", color = MaterialTheme.colorScheme.primary, maxLines = 1)
+                    }
+                    Text("${state.messages.size} messages", maxLines = 1,
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("CHANNELS", fontWeight = FontWeight.Bold); Spacer(Modifier.weight(1f))
+                Text("${state.myChannels.size} channels", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(8.dp)) }
         if (state.selected != null) {
@@ -86,10 +120,12 @@ import pl.meshcore.monitor.data.WarsawTimeFormatter
                 items(state.messages, key = { it.id }) { message ->
                     val tracked = message.sender.trim().lowercase() in trackedNames
                     Column(Modifier.fillMaxWidth().clickable { vm.showMessageDetails(message) }.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                        Row { Text(message.sender, fontWeight = FontWeight.Medium,
+                        Text(message.sender, fontWeight = FontWeight.Medium,
                             color = if (tracked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                            Spacer(Modifier.weight(1f)); Text(WarsawTimeFormatter.dateTime(message.timestamp), style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        Text(WarsawTimeFormatter.dateTime(message.timestamp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(4.dp))
                         MentionText(message.text, trackedNames)
                     }; HorizontalDivider()
                 }
@@ -100,11 +136,38 @@ import pl.meshcore.monitor.data.WarsawTimeFormatter
         }; HorizontalDivider()
         if (state.loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else if (state.myChannels.isEmpty()) Box(Modifier.fillMaxSize().padding(24.dp)) { Text("Channels you add will appear here") }
-        else LazyColumn(Modifier.fillMaxSize()) { items(state.myChannels, key = { it.hash }) { channel ->
+        else {
+            val listState = rememberLazyListState()
+            val orderedChannels = state.myChannels.sortedWith(
+                compareByDescending<ChannelSummary> { channel ->
+                    channel.recentMessages.any { it.isTrackedMessage(trackedNames) }
+                }.thenByDescending { channel ->
+                    channel.recentMessages.firstOrNull { it.isTrackedMessage(trackedNames) }?.timestamp.orEmpty()
+                }.thenByDescending { it.latestMessage?.timestamp.orEmpty() }
+            )
+            val topChannel = orderedChannels.firstOrNull()?.hash
+            LaunchedEffect(topChannel) { if (topChannel != null) listState.animateScrollToItem(0) }
+            PullToRefreshBox(state.refreshingChannels, vm::refreshAll, Modifier.fillMaxSize()) {
+            LazyColumn(Modifier.fillMaxSize(), state = listState) { items(orderedChannels, key = { it.hash }) { channel ->
+            val unread = channel.recentMessages.filter { it.epochMillis() > channel.lastReadAtMs }
+            val trackedUnread = unread.count { it.isTrackedMessage(trackedNames) }
+            val otherUnread = unread.size - trackedUnread
             Row(Modifier.fillMaxWidth().clickable { vm.open(channel) }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Text(channel.name, fontWeight = FontWeight.Medium)
-                    Text(if (channel.isPrivate) "Private channel" else "Saved public channel", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Text(channel.name, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                if (trackedUnread > 0) Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = MaterialTheme.shapes.extraLarge,
+                ) {
+                    Text(trackedUnread.toString(), modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimary)
+                }
+                if (otherUnread > 0) {
+                    Spacer(Modifier.width(5.dp))
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.extraLarge) {
+                        Text(otherUnread.toString(), modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 if (channel.isPrivate) {
                     IconButton({ renameTarget = channel; renameText = channel.name }) {
                         Icon(Icons.Outlined.Edit, "Rename private channel")
@@ -112,12 +175,106 @@ import pl.meshcore.monitor.data.WarsawTimeFormatter
                 }
                 IconButton({ vm.removeSaved(channel) }) { Icon(Icons.Outlined.Delete, "Remove channel") }
             }; HorizontalDivider()
-        } }
+        }
+                item {
+                    Row(Modifier.fillMaxWidth().clickable { statistics = true }.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.QueryStats, "Statistics", tint = MaterialTheme.colorScheme.primary)
+                        Text("  Statistics", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                    }
+                    HorizontalDivider()
+                }
+            } }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChannelStatisticsScreen(
+    modifier: Modifier,
+    devices: List<SettingsViewModel.DeviceEntry>,
+    close: () -> Unit,
+) {
+    val events by ChannelStatisticsEngine.events.collectAsState()
+    val refreshing by ChannelStatisticsEngine.refreshing.collectAsState()
+    var selectedKey by rememberSaveable { mutableStateOf(devices.firstOrNull()?.publicKey.orEmpty()) }
+    LaunchedEffect(devices.map { it.publicKey }) {
+        if (devices.none { it.publicKey == selectedKey }) selectedKey = devices.firstOrNull()?.publicKey.orEmpty()
+    }
+    var menu by remember { mutableStateOf(false) }
+    val selected = devices.firstOrNull { it.publicKey == selectedKey }
+    val selectedEvents = events.filter { it.publicKey.equals(selectedKey, true) }
+    val grouped = selectedEvents.groupBy { it.channel }.entries.sortedByDescending { entry ->
+        entry.value.maxOfOrNull { it.timestamp }.orEmpty()
+    }
+    PullToRefreshBox(refreshing, ChannelStatisticsEngine::refreshNow, modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(close) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back") }
+            Text("CHANNEL STATISTICS", fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { if (selectedKey.isNotBlank()) ChannelStatisticsEngine.reset(selectedKey) },
+                enabled = selectedEvents.isNotEmpty()) { Text("Reset") }
+        }
+        ExposedDropdownMenuBox(menu, { menu = !menu }, Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            OutlinedTextField(
+                value = selected?.let { "${it.publicKey.take(4).uppercase()} · ${it.name}" }.orEmpty(),
+                onValueChange = {}, readOnly = true, label = { Text("Tracked key") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(menu) },
+                modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
+            )
+            ExposedDropdownMenu(menu, { menu = false }) {
+                devices.forEach { device -> DropdownMenuItem(
+                    text = { Text("${device.publicKey.take(4).uppercase()} · ${device.name}") },
+                    onClick = { selectedKey = device.publicKey; menu = false },
+                ) }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            StatisticValue("Sent", selectedEvents.count { it.sent })
+            StatisticValue("Mentions", selectedEvents.count { it.mention })
+            StatisticValue("Channels", grouped.size)
+        }
+        HorizontalDivider()
+        if (grouped.isEmpty()) Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+            Text("No related channel traffic in the last 24 hours", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else LazyColumn(Modifier.fillMaxSize()) {
+            items(grouped, key = { it.key }) { (channel, values) ->
+                val ordered = values.sortedBy { it.timestamp }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Row { Text(channel, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.weight(1f)); Text("${values.size} packets") }
+                    Text("First: ${WarsawTimeFormatter.dateTime(ordered.first().timestamp)}",
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("Last: ${WarsawTimeFormatter.dateTime(ordered.last().timestamp)}",
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("Sent ${values.count { it.sent }} · Mentions ${values.count { it.mention }}",
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                HorizontalDivider()
+            }
+        }
+    } }
+}
+
+@Composable private fun StatisticValue(label: String, value: Int) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value.toString(), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold)
+        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 
 @Composable private fun MentionText(text: String, tracked: Set<String>) =
     TrackedNameText(text, tracked, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+private fun pl.meshcore.monitor.data.ChannelMessage.isTrackedMessage(tracked: Set<String>): Boolean =
+    tracked.any { name -> sender.trim().equals(name.trim(), true) || sender.trim().startsWith("${name.trim()} ", true) } ||
+        TrackedMention.contains(text, tracked)
+
+private fun pl.meshcore.monitor.data.ChannelMessage.epochMillis(): Long =
+    runCatching { Instant.parse(timestamp).toEpochMilli() }.getOrDefault(0L)
 
 @Composable private fun ChannelDetailsDialog(details: ChannelMessageDetails, close: () -> Unit) {
     val message = details.message

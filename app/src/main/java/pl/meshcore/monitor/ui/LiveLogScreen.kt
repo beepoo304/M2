@@ -42,7 +42,7 @@ import org.json.JSONObject
     selected?.let { PacketDetailsDialog(it) { selected = null } }
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(16.dp)) {
-            Column { Text("LIVE LOG", fontWeight = FontWeight.Bold); Text("Newest first · ${state.packets.size} / 100",
+            Column { Text("LIVE LOG", fontWeight = FontWeight.Bold); Text("Newest first · ${state.packets.size} / 250",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.weight(1f)); Icon(Icons.Outlined.Refresh, "Listening", tint = statusColor,
                 modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = if (connected) rotation else 0f })
@@ -85,7 +85,7 @@ import org.json.JSONObject
                 val message = decoded?.optString("text").orEmpty()
                 item { Text("Channel: ${channel.ifBlank { "Private channel" }}", fontWeight = FontWeight.Medium) }
                 if (sender.isNotBlank()) item { Text("Sender: $sender") }
-                item { TrackedNameText(if (message.isNotBlank()) message else "Message content is not available", config.ownNodeNames) }
+                item { Text(if (message.isNotBlank()) message else "Message content is not available", color = Color(0xFF2196F3)) }
             }
             val routes = networkDetails?.routes.orEmpty()
             val trackedRoutes = routes.filter { MeshPath.endingKeys(it.path, config.ownPublicKeys).isNotEmpty() }

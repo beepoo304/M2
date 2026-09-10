@@ -34,15 +34,18 @@ object PacketObservationRepository {
     }
 
     internal fun parse(root: JSONObject): PacketObservationDetails {
-        val observations = root.optJSONArray("observations") ?: JSONArray()
+        val packet = root.optJSONObject("packet")
+        val trace = packet?.optInt("payload_type", -1) == 9
+        val observations = root.optJSONArray("observations") ?: packet?.optJSONArray("observations") ?: JSONArray()
         val routes = buildList {
             for (index in 0 until observations.length()) {
                 val observation = observations.optJSONObject(index) ?: continue
                 val value = observation.optString("path_json")
                 val array = runCatching { JSONArray(value) }.getOrNull() ?: continue
-                val route = MeshPath.normalize(buildList {
+                val parts = buildList {
                     for (hop in 0 until array.length()) add(array.optString(hop))
-                }.filter(String::isNotBlank))
+                }.filter(String::isNotBlank)
+                val route = if (trace) MeshPath.normalizeTrace(parts) else MeshPath.normalize(parts)
                 add(ObservedRoute(
                     path = route,
                     observerName = observation.optString("observer_name").ifBlank { "Unknown observer" },
@@ -53,7 +56,8 @@ object PacketObservationRepository {
             }
         }.distinctBy { it.path to it.observerPublicKey.lowercase() }
             .sortedWith(compareBy<ObservedRoute> { it.path.size }.thenBy { it.path.joinToString() })
-        return PacketObservationDetails(routes, root.optInt("observation_count", observations.length()))
+        return PacketObservationDetails(routes,
+            root.optInt("observation_count", packet?.optInt("observation_count", observations.length()) ?: observations.length()))
     }
 }
 

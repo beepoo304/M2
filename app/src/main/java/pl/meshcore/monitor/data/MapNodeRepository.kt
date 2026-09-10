@@ -9,6 +9,8 @@ import kotlin.math.abs
 data class LocatedNode(val publicKey: String, val lat: Double, val lon: Double)
 
 object MapNodeRepository {
+    @Volatile var lastAllRepeaterCount: Int = 0
+        private set
     suspend fun load(): List<LocatedNode> = withContext(Dispatchers.IO) {
         runCatching {
             val base = ConnectionConfigBus.config.value.coreScopeBaseUrl.trimEnd('/')
@@ -16,6 +18,7 @@ object MapNodeRepository {
                 .execute().use { response ->
                     if (!response.isSuccessful) return@use emptyList()
                     val nodes = JSONObject(response.body?.string().orEmpty()).optJSONArray("nodes") ?: return@use emptyList()
+                    lastAllRepeaterCount = nodes.length()
                     buildList { for (i in 0 until nodes.length()) nodes.optJSONObject(i)?.let { node ->
                         val key = node.optString("public_key").uppercase()
                         if (key.length >= 4 && node.has("lat") && node.has("lon") && !node.isNull("lat") && !node.isNull("lon")) {

@@ -6,13 +6,17 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import pl.meshcore.monitor.data.ConnectionConfig
 import pl.meshcore.monitor.data.ConnectionConfigBus
 import pl.meshcore.monitor.data.DEFAULT_OWN_PUBLIC_KEYS
 import pl.meshcore.monitor.data.SharedLiveRepository
 import pl.meshcore.monitor.data.SecureChannelStore
 import pl.meshcore.monitor.data.ChannelMessage
+import pl.meshcore.monitor.data.ChannelStatisticsEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,8 +40,15 @@ class LiveListenerService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "M2 live listener", NotificationManager.IMPORTANCE_LOW))
         val openApp = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val largeLogo = Bitmap.createBitmap(144, 144, Bitmap.Config.ARGB_8888).also { bitmap ->
+            ContextCompat.getDrawable(this, R.drawable.m2_logo)?.apply {
+                setBounds(0, 0, bitmap.width, bitmap.height)
+                draw(Canvas(bitmap))
+            }
+        }
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeLogo)
             .setContentTitle("M2 is listening")
             .setContentText("Live packets are being updated in the background")
             .setContentIntent(openApp)
@@ -47,6 +58,7 @@ class LiveListenerService : Service() {
             .build()
         startForeground(NOTIFICATION_ID, notification)
         SharedLiveRepository.start()
+        ChannelStatisticsEngine.start(this)
         val channelStore = SecureChannelStore(this)
         scope.launch {
             SharedLiveRepository.state.collect { state ->
@@ -63,6 +75,10 @@ class LiveListenerService : Service() {
                     }.singleOrNull() ?: return@forEach
                     val sender = decoded.optString("sender").ifBlank { "Anonymous" }
                     val fullText = decoded.optString("text")
+                    // Never persist an encrypted/hash-only envelope as an empty
+                    // Anonymous message in a saved channel.
+                    if (channel.secret.isNotBlank() &&
+                        (sender == "Anonymous" || fullText.isBlank())) return@forEach
                     val text = fullText.removePrefix("$sender: ")
                     pending.getOrPut(channel) { mutableListOf() }.add(ChannelMessage(
                         id = packet.id, sender = sender, text = text, timestamp = packet.timestamp,

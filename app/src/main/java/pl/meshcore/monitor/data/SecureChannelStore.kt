@@ -12,6 +12,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import java.security.MessageDigest
+import java.time.Instant
 
 data class SavedChannel(
     val name: String,
@@ -51,19 +52,31 @@ class SecureChannelStore(context: Context) {
         val encrypted = cipher.doFinal(array.toString().toByteArray())
         val packed = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP)
         val activeMessageKeys = bounded.map { "messages_${fingerprint(it)}" }.toSet()
+        val activeClearedKeys = bounded.map { "messages_cleared_${fingerprint(it)}" }.toSet()
+        val activeReadKeys = bounded.map { "channel_read_${fingerprint(it)}" }.toSet()
         prefs.edit().apply {
             putString("data", packed)
-            prefs.all.keys.filter { it.startsWith("messages_") && it !in activeMessageKeys }.forEach(::remove)
+            prefs.all.keys.filter {
+                it.startsWith("messages_") && !it.startsWith("messages_cleared_") && it !in activeMessageKeys
+            }.forEach(::remove)
+            prefs.all.keys.filter { it.startsWith("messages_cleared_") && it !in activeClearedKeys }.forEach(::remove)
+            prefs.all.keys.filter { it.startsWith("channel_read_") && it !in activeReadKeys }.forEach(::remove)
         }.commit()
     }
 
     @Synchronized fun loadMessages(channel: SavedChannel): List<ChannelMessage> = runCatching {
         val plain = decrypt(prefs.getString("messages_${fingerprint(channel)}", null) ?: return emptyList())
         val array = JSONArray(plain)
+        val clearedAt = prefs.getLong("messages_cleared_${fingerprint(channel)}", 0L)
         buildList { for (i in 0 until minOf(array.length(), MAX_MESSAGES)) array.optJSONObject(i)?.let { item ->
+            val timestamp = item.optString("timestamp")
+            if (messageEpoch(timestamp) <= clearedAt) return@let
+            val sender = item.optString("sender")
+            val text = item.optString("text")
+            if (channel.secret.isNotBlank() && sender.equals("Anonymous", true) && text.isBlank()) return@let
             add(ChannelMessage(
-                id = item.optString("id"), sender = item.optString("sender"), text = item.optString("text"),
-                timestamp = item.optString("timestamp"), hops = item.optInt("hops"),
+                id = item.optString("id"), sender = sender, text = text,
+                timestamp = timestamp, hops = item.optInt("hops"),
                 observers = item.optJSONArray("observers")?.let { values ->
                     buildList { for (j in 0 until values.length()) add(values.optString(j)) }
                 }.orEmpty(), repeats = item.optInt("repeats", 1),
@@ -74,8 +87,10 @@ class SecureChannelStore(context: Context) {
     }.getOrDefault(emptyList())
 
     @Synchronized fun mergeMessages(channel: SavedChannel, incoming: List<ChannelMessage>): List<ChannelMessage> {
-        if (incoming.isEmpty()) return loadMessages(channel)
-        val merged = (incoming + loadMessages(channel)).distinctBy { it.id }
+        val clearedAt = prefs.getLong("messages_cleared_${fingerprint(channel)}", 0L)
+        val fresh = incoming.filter { messageEpoch(it.timestamp) > clearedAt }
+        if (fresh.isEmpty()) return loadMessages(channel)
+        val merged = (fresh + loadMessages(channel)).distinctBy { it.id }
             .sortedByDescending { it.timestamp }.take(MAX_MESSAGES)
         val array = JSONArray().apply { merged.forEach { message -> put(JSONObject().apply {
             put("id", message.id); put("sender", message.sender); put("text", message.text)
@@ -86,6 +101,26 @@ class SecureChannelStore(context: Context) {
         prefs.edit().putString("messages_${fingerprint(channel)}", encrypt(array.toString())).commit()
         return merged
     }
+
+    @Synchronized fun clearMessages(channel: SavedChannel) {
+        val fingerprint = fingerprint(channel)
+        prefs.edit().remove("messages_$fingerprint")
+            .putLong("messages_cleared_$fingerprint", System.currentTimeMillis()).commit()
+    }
+
+    @Synchronized fun lastReadAt(channel: SavedChannel): Long {
+        val key = "channel_read_${fingerprint(channel)}"
+        return prefs.getLong(key, 0L)
+    }
+
+    @Synchronized fun markRead(channel: SavedChannel): Long {
+        val now = System.currentTimeMillis()
+        prefs.edit().putLong("channel_read_${fingerprint(channel)}", now).commit()
+        return now
+    }
+
+    private fun messageEpoch(value: String): Long =
+        runCatching { Instant.parse(value).toEpochMilli() }.getOrDefault(0L)
 
     private fun fingerprint(channel: SavedChannel): String {
         val identity = channel.secret.ifBlank { channel.name.lowercase() }
@@ -119,7 +154,7 @@ class SecureChannelStore(context: Context) {
     private companion object {
         const val ALIAS = "meshcore_channel_keys"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val MAX_MESSAGES = 100
+        const val MAX_MESSAGES = 250
         const val MAX_CHANNELS = 50
     }
 }

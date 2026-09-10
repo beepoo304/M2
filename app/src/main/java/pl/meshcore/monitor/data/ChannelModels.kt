@@ -6,6 +6,9 @@ data class ChannelSummary(
     val lastActivity: String = "",
     val messageCount: Int = 0,
     val isPrivate: Boolean = false,
+    val latestMessage: ChannelMessage? = null,
+    val recentMessages: List<ChannelMessage> = emptyList(),
+    val lastReadAtMs: Long = 0L,
 )
 
 data class ChannelMessage(

@@ -20,6 +20,8 @@ M² is a compact Android monitor for the public MeshCore live network. It turns 
 - supports private channels imported from a 16- or 32-byte key or a QR code;
 - decrypts saved private-channel messages locally on the phone;
 - highlights mentions in channel messages;
+- maps packet routes for tracked device keys and calculates unique network distance;
+- presents the longest resolved route as an animated flight and can record it as an MP4;
 - can keep listening in the background through an Android foreground service;
 - includes a real **Close application** action that stops background listening.
 
@@ -28,6 +30,17 @@ Private channel keys are stored with Android Keystore-backed encryption. M² rea
 ## Download
 
 Install the newest APK from the repository's **Releases** page. Android may ask you to allow installation from your browser or file manager.
+
+## Record the longest route
+
+1. Open **Map** and select a tracked device key.
+2. Start tracking and let M² collect packet routes, or load a previously saved M² map.
+3. Tap the blue **Longest route** button.
+4. Approve Android's screen-capture prompt. M² opens the full-screen map and starts the flight from the first repeater.
+5. The blue line follows the longest unambiguous route. Hop hashes and segment distances appear during the flight, followed by the finish hop and total route distance.
+6. When the flight ends, choose **YES** to save the MP4 in the export folder configured under **Settings**. The default location is `Download/M2`.
+
+Only repeaters with known coordinates can be placed on the map. One-byte or otherwise ambiguous paths are excluded from the longest-route calculation.
 
 ## Build from source
 

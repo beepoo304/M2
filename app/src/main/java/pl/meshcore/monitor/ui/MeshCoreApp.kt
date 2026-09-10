@@ -1,6 +1,7 @@
 package pl.meshcore.monitor.ui
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.CellTower
@@ -23,10 +24,11 @@ private val appTabs = listOf(
 
 @Composable fun MeshCoreApp(onCloseApp: () -> Unit) {
     var selected by remember { mutableIntStateOf(0) }
+    var mapFullscreen by remember { mutableStateOf(false) }
     val settings: SettingsViewModel = viewModel()
     val devices by settings.devices.collectAsState()
     val names = devices.map { it.name.trim().lowercase() }.filterNot { it.startsWith("looking up") }.toSet()
-    Scaffold(bottomBar = { NavigationBar { appTabs.forEachIndexed { index, tab ->
+    Scaffold(bottomBar = { if (!mapFullscreen) NavigationBar { appTabs.forEachIndexed { index, tab ->
         NavigationBarItem(
             selected = selected == index,
             onClick = { selected = index },
@@ -36,8 +38,9 @@ private val appTabs = listOf(
         )
     } } }) { padding -> when (selected) {
         0 -> LiveLogScreen(Modifier.padding(padding)); 1 -> OwnTrafficLogScreen(Modifier.padding(padding))
-        2 -> ChannelsScreen(Modifier.padding(padding), names)
-        3 -> NetworkMapScreen(Modifier.padding(padding), devices)
+        2 -> ChannelsScreen(Modifier.padding(padding), names, devices)
+        3 -> NetworkMapScreen(if (mapFullscreen) Modifier.fillMaxSize() else Modifier.padding(padding), devices,
+            onFullscreenChanged = { mapFullscreen = it })
         else -> SettingsScreen(Modifier.padding(padding), settings, onCloseApp)
     } }
 }

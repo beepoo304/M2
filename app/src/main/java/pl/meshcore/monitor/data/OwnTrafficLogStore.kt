@@ -12,7 +12,7 @@ import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Encrypted, strictly bounded persistence for the 100-entry own-device log. */
+/** Encrypted, strictly bounded persistence for the 250-entry own-device log. */
 class OwnTrafficLogStore(context: Context) {
     private val prefs = context.getSharedPreferences("secure_own_log", Context.MODE_PRIVATE)
 
@@ -39,6 +39,9 @@ class OwnTrafficLogStore(context: Context) {
                     routeType = item.optNullableInt("routeType"), rssi = item.optNullableInt("rssi"),
                     snr = item.optNullableDouble("snr"), observationCount = item.optInt("observationCount", 1),
                     firstSeen = item.optString("firstSeen"),
+                    matchedOwnKeys = item.optJSONArray("matchedOwnKeys")?.let { keys ->
+                        buildSet { for (i in 0 until keys.length()) add(keys.optString(i)) }
+                    }.orEmpty(),
                 ))
             }
         }
@@ -55,6 +58,7 @@ class OwnTrafficLogStore(context: Context) {
                 put("timestamp", packet.timestamp); put("decodedJson", packet.decodedJson)
                 put("path", JSONArray(packet.path)); put("routeType", packet.routeType); put("rssi", packet.rssi)
                 put("snr", packet.snr); put("observationCount", packet.observationCount); put("firstSeen", packet.firstSeen)
+                put("matchedOwnKeys", JSONArray(packet.matchedOwnKeys.toList()))
             })
         } }
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key()) }

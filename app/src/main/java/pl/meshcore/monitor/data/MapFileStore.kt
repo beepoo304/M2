@@ -1,9 +1,6 @@
 package pl.meshcore.monitor.data
 
-import android.content.ContentValues
 import android.content.Context
-import android.os.Environment
-import android.provider.MediaStore
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
@@ -29,33 +26,15 @@ object MapFileStore {
         progress(10)
         val date = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
         val prefix = "${session.key.take(4).uppercase()}_${date}_"
-        val resolver = context.contentResolver
         var highest = 0
-        resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Downloads.DISPLAY_NAME),
-            "${MediaStore.Downloads.DISPLAY_NAME} LIKE ?", arrayOf("$prefix%.m2map"), null)?.use { cursor ->
-            val column = cursor.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                val number = cursor.getString(column).removePrefix(prefix).removeSuffix(".m2map").toIntOrNull() ?: 0
-                if (number > highest) highest = number
-            }
+        ExportLocationStore.existingNames(context, prefix, ".m2map").forEach { existing ->
+            val number = existing.removePrefix(prefix).removeSuffix(".m2map").toIntOrNull() ?: 0
+            if (number > highest) highest = number
         }
         val fileName = "$prefix${(highest + 1).toString().padStart(3, '0')}.m2map"
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-            put(MediaStore.Downloads.MIME_TYPE, "application/json")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/M2")
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Cannot create map file")
-        try {
-            progress(40)
-            resolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(encode(session, name)) }
-                ?: error("Cannot write map file")
-            progress(85)
-            values.clear(); values.put(MediaStore.Downloads.IS_PENDING, 0); resolver.update(uri, values, null, null)
-            progress(100)
-            return fileName
-        } catch (error: Throwable) { resolver.delete(uri, null, null); throw error }
+        progress(40)
+        ExportLocationStore.write(context, fileName, "application/json", encode(session, name))
+        progress(100)
+        return fileName
     }
 }

@@ -24,6 +24,7 @@ data class MapEdge(
     val to: MapNodePoint,
     val uncertain: Boolean,
     val count: Int = 1,
+    val longestRoute: Boolean = false,
 )
 
 data class MapRouteEvent(
@@ -33,6 +34,7 @@ data class MapRouteEvent(
     val timestamp: String,
     val observedAt: Long,
     val path: List<String>,
+    val uncertainAttribution: Boolean = false,
 )
 
 data class MapSession(
@@ -51,6 +53,7 @@ internal object MapSessionJson {
             put("packetId", event.packetId); put("packetHash", event.packetHash)
             put("payloadType", event.payloadType); put("timestamp", event.timestamp)
             put("observedAt", event.observedAt); put("path", JSONArray(event.path))
+            put("uncertainAttribution", event.uncertainAttribution)
         }) } })
     }.toString()
 
@@ -64,7 +67,8 @@ internal object MapSessionJson {
                 val path = event.optJSONArray("path") ?: JSONArray()
                 add(MapRouteEvent(event.optString("packetId"), event.optString("packetHash"),
                     event.optInt("payloadType"), event.optString("timestamp"), event.optLong("observedAt"),
-                    buildList { for (hop in 0 until path.length()) add(path.optString(hop)) }))
+                    buildList { for (hop in 0 until path.length()) add(path.optString(hop)) },
+                    event.optBoolean("uncertainAttribution")))
             } },
         )
     }.getOrDefault(MapSession(fallbackKey))

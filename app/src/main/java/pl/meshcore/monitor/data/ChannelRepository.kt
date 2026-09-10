@@ -18,6 +18,9 @@ class ChannelRepository(context: Context) {
     fun loadSaved(): List<SavedChannel> = store.load()
     fun save(channels: List<SavedChannel>) = store.save(channels)
     fun cachedMessages(channel: SavedChannel): List<ChannelMessage> = sortMessages(store.loadMessages(channel))
+    fun clearMessages(channel: SavedChannel) = store.clearMessages(channel)
+    fun lastReadAt(channel: SavedChannel): Long = store.lastReadAt(channel)
+    fun markRead(channel: SavedChannel): Long = store.markRead(channel)
 
     fun parseChannel(value: String): SavedChannel? {
         val input = value.trim()
@@ -37,7 +40,9 @@ class ChannelRepository(context: Context) {
     suspend fun messages(channel: SavedChannel): List<ChannelMessage> = withContext(Dispatchers.IO) {
         val cached = store.loadMessages(channel)
         runCatching {
-            val remote = loadRemoteMessages(channel.name)
+            // Named/key channels must be verified with their secret. The server's
+            // name feed can contain packets sharing the same one-byte channel hash.
+            val remote = if (channel.secret.isBlank()) loadRemoteMessages(channel.name) else emptyList()
             val local = if (channel.secret.isNotBlank()) {
                 ChannelCrypto.decodeHex(channel.secret)?.let { decryptRecentPackets(channel, it) }.orEmpty()
             } else emptyList()
@@ -57,7 +62,7 @@ class ChannelRepository(context: Context) {
 
     private fun loadRemoteMessages(name: String): List<ChannelMessage> {
         val base = ConnectionConfigBus.config.value.coreScopeBaseUrl.trimEnd('/')
-        val request = Request.Builder().url("$base/api/channels/${URLEncoder.encode(name, "UTF-8")}/messages?limit=200").build()
+        val request = Request.Builder().url("$base/api/channels/${URLEncoder.encode(name, "UTF-8")}/messages?limit=250").build()
         return runCatching { client.newCall(request).apply { timeout().timeout(15, TimeUnit.SECONDS) }.execute().use { response ->
             if (!response.isSuccessful) return@use emptyList()
             val array = JSONObject(response.body?.string().orEmpty()).optJSONArray("messages") ?: return@use emptyList()

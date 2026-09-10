@@ -45,6 +45,7 @@ data class LivePacket(
     val snr: Double? = null,
     val observationCount: Int = 1,
     val firstSeen: String = "",
+    val matchedOwnKeys: Set<String> = emptySet(),
 )
 
 enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED, ERROR }
@@ -138,14 +139,14 @@ class CoreScopeRepository(
 
     private suspend fun refreshPackets(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val request = Request.Builder().url("$httpBase/api/packets?limit=100&_=${System.currentTimeMillis()}")
+            val request = Request.Builder().url("$httpBase/api/packets?limit=250&_=${System.currentTimeMillis()}")
                 .header("Cache-Control", "no-cache").get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) error("HTTP ${response.code}")
                 val source = JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") ?: return@use
                 val parsedPackets = buildList {
-                    for (index in 0 until minOf(source.length(), 100)) parsePacket(source.optJSONObject(index))?.let(::add)
-                }.distinctBy { it.id }.take(100)
+                    for (index in 0 until minOf(source.length(), LIVE_LOG_LIMIT)) parsePacket(source.optJSONObject(index))?.let(::add)
+                }.distinctBy { it.id }.take(LIVE_LOG_LIMIT)
                 val packets = enrichOwnTraffic(parsedPackets)
                 lastSuccessfulFetch = System.currentTimeMillis()
                 _state.value = _state.value.copy(packets = packets, connection = ConnectionState.CONNECTED, error = null, revision = _state.value.revision + 1)
@@ -192,6 +193,7 @@ class CoreScopeRepository(
                     packet.copy(
                         ownTraffic = packet.ownTraffic || match.confirmed,
                         possibleOwnTraffic = !packet.ownTraffic && !match.confirmed && match.possible,
+                        matchedOwnKeys = packet.matchedOwnKeys + match.confirmedKeys,
                     )
                 }
             }.awaitAll()
@@ -217,16 +219,26 @@ class CoreScopeRepository(
             flags?.optBoolean("sensor") == true -> "Sensor"
             else -> null
         }
-        val path = MeshPath.normalize(runCatching {
+        val rawPath = runCatching {
             val array = JSONArray(json.optString("path_json", "[]"))
             buildList { for (index in 0 until array.length()) add(array.optString(index)) }.filter(String::isNotBlank)
-        }.getOrDefault(emptyList()))
+        }.getOrDefault(emptyList())
+        val path = if (type == 9) MeshPath.normalizeTrace(rawPath) else MeshPath.normalize(rawPath)
+        val traceOwnTraffic = type == 9 && path.any { hop ->
+            hop.length >= 4 && ownPublicKeys.any { it.startsWith(hop, ignoreCase = true) }
+        }
+        val directlyMatchedKeys = ownPublicKeys.filterTo(mutableSetOf()) { key ->
+            publicKey?.equals(key, true) == true ||
+                json.optString("observer_id").equals(key, true) ||
+                (type == 9 && path.any { it.length >= 4 && key.startsWith(it, true) })
+        }
         return LivePacket(
             id = json.optString("id"), hash = json.optString("hash"), time = WarsawTimeFormatter.time(json.optString("timestamp")),
             payloadType = type, typeLabel = payloadTypeName(type), observerName = observer,
             observerPublicKey = json.optString("observer_id"), nodeName = nodeName, nodeRole = role,
             detail = packetDetail(type, decoded, json.optString("raw_hex")), rawHex = json.optString("raw_hex"), publicKey = publicKey,
             ownTraffic = publicKey?.lowercase() in ownPublicKeys ||
+                traceOwnTraffic ||
                 json.optString("observer_id").lowercase() in ownPublicKeys ||
                 decoded?.optString("sender").orEmpty().trim().lowercase() in ownNodeNames ||
                 decoded?.optString("name").orEmpty().trim().lowercase() in ownNodeNames ||
@@ -236,6 +248,7 @@ class CoreScopeRepository(
             timestamp = json.optString("timestamp"), decodedJson = decoded?.toString().orEmpty(), path = path,
             routeType = json.optNullableInt("route_type"), rssi = json.optNullableInt("rssi"), snr = json.optNullableDouble("snr"),
             observationCount = json.optInt("observation_count", 1), firstSeen = json.optString("first_seen"),
+            matchedOwnKeys = directlyMatchedKeys,
         )
     }
 
@@ -283,6 +296,7 @@ class CoreScopeRepository(
     )
 
     private companion object {
+        const val LIVE_LOG_LIMIT = 250
         const val MAX_OBSERVATION_REQUESTS = 6
         const val NEGATIVE_MATCH_TTL_MS = 30_000L
     }
@@ -290,22 +304,30 @@ class CoreScopeRepository(
 
 internal object OwnTrafficClassifier {
     fun classify(details: PacketObservationDetails, ownPublicKeys: Set<String>): OwnTrafficMatch {
-        val confirmed = details.routes.any { route ->
-            MeshPath.hasExactObserver(route, ownPublicKeys) ||
-                MeshPath.hasReliableEnding(route.path, ownPublicKeys)
+        val confirmedKeys = details.routes.flatMapTo(mutableSetOf()) { route ->
+            ownPublicKeys.filter { key ->
+                route.observerPublicKey.equals(key, true) ||
+                    (route.path.lastOrNull()?.length?.let { it >= 4 } == true &&
+                        key.startsWith(route.path.last(), true))
+            }
         }
+        val confirmed = confirmedKeys.isNotEmpty()
         val possible = !confirmed && details.routes.any { route ->
             route.path.lastOrNull()?.length == 2 &&
                 MeshPath.endingKeys(route.path, ownPublicKeys).isNotEmpty()
         }
-        return OwnTrafficMatch(confirmed, possible)
+        return OwnTrafficMatch(confirmed, possible, confirmedKeys)
     }
 
     fun matches(details: PacketObservationDetails, ownPublicKeys: Set<String>): Boolean =
         classify(details, ownPublicKeys).confirmed
 }
 
-internal data class OwnTrafficMatch(val confirmed: Boolean, val possible: Boolean)
+internal data class OwnTrafficMatch(
+    val confirmed: Boolean,
+    val possible: Boolean,
+    val confirmedKeys: Set<String> = emptySet(),
+)
 
 internal object TrackedMention {
     fun contains(text: String, nodeNames: Set<String>): Boolean {

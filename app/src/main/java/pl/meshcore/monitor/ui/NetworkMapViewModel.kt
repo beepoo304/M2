@@ -109,8 +109,19 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
         if (packet.payloadType in 0..2) {
             val sourceHash = decoded?.optString("srcHash").orEmpty()
             val destinationHash = decoded?.optString("destHash").orEmpty()
-            if ((sourceHash.length == 2 && current.selectedKey.startsWith(sourceHash, true)) ||
-                (destinationHash.length == 2 && current.selectedKey.startsWith(destinationHash, true))) return true
+            val ownKeys = ConnectionConfigBus.config.value.ownPublicKeys
+            val confirmedByOwnRadio = packet.observerPublicKey.isNotBlank() && ownKeys.any {
+                it.equals(packet.observerPublicKey, true)
+            } || packet.path.any { hop ->
+                hop.length >= 4 && ownKeys.any { it.startsWith(hop, true) }
+            }
+            val exactHash = sourceHash.length >= 4 && current.selectedKey.startsWith(sourceHash, true) ||
+                destinationHash.length >= 4 && current.selectedKey.startsWith(destinationHash, true)
+            val corroboratedOneByteHash = confirmedByOwnRadio && (
+                sourceHash.length == 2 && current.selectedKey.startsWith(sourceHash, true) ||
+                    destinationHash.length == 2 && current.selectedKey.startsWith(destinationHash, true)
+                )
+            if (exactHash || corroboratedOneByteHash) return true
         }
         val name = current.selectedName.trim()
         return name.isNotBlank() && !name.startsWith("Looking up", true) &&
@@ -129,7 +140,8 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
                 val id = "${packet.id}:${path.joinToString()}"
                 if (path.isEmpty() || id in existing || path.any { it.length !in setOf(2, 4, 6) }) null
                 else MapRouteEvent(packet.id, packet.hash, packet.payloadType, packet.timestamp,
-                    System.currentTimeMillis(), path, uncertainAttribution = packet.payloadType in 0..2)
+                    System.currentTimeMillis(), path,
+                    uncertainAttribution = path.any { it.length == 2 })
             }
             if (additions.isNotEmpty()) {
                 val updated = session.copy(events = (session.events + additions).takeLast(5000))
@@ -147,10 +159,12 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
             })?.let {
             MapNodePoint(it.publicKey.take(4), it.lat, it.lon)
         }
-        val routedEvents = if (selected != null) events.map { event ->
-            if (event.path.firstOrNull().equals(selected.hash, ignoreCase = true)) event
+        val routedEvents = events.map { event ->
+            if (event.payloadType in 0..2) event.copy(
+                uncertainAttribution = event.path.any { it.length == 2 }
+            ) else if (selected == null || event.path.firstOrNull().equals(selected.hash, ignoreCase = true)) event
             else event.copy(path = listOf(selected.hash) + event.path)
-        } else events
+        }
         val metrics = MapRouteMapper.metrics(routedEvents, locatedNodes)
         val longestSegments = metrics.longestRoute.zipWithNext().mapTo(mutableSetOf()) { (a, b) ->
             listOf("${a.lat}:${a.lon}", "${b.lat}:${b.lon}").sorted().joinToString("|")

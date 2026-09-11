@@ -12,7 +12,7 @@ android {
         applicationId = "pl.meshcore.monitor"
         minSdk = 28
         targetSdk = 35
-        versionCode = 30
+        versionCode = 31
         versionName = "0.1.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

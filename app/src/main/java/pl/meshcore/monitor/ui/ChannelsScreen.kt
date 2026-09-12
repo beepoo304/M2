@@ -216,7 +216,7 @@ private fun AppPacketStatisticsScreen(modifier: Modifier, close: () -> Unit) {
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(close) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back") }
-            Text("APP PACKET STATISTICS", fontWeight = FontWeight.Bold)
+            Text("APP PACKET STATISTICS", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
             Spacer(Modifier.weight(1f))
             TextButton({ confirmReset = true }) { Text("Reset") }
         }

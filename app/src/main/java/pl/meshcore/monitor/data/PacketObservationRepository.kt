@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 data class PacketObservationDetails(
     val routes: List<ObservedRoute> = emptyList(),
     val observationCount: Int = 0,
+    val loadSucceeded: Boolean = false,
 )
 
 data class ObservedRoute(
@@ -62,7 +63,8 @@ object PacketObservationRepository {
         }.distinctBy { it.path to it.observerPublicKey.lowercase() }
             .sortedWith(compareBy<ObservedRoute> { it.path.size }.thenBy { it.path.joinToString() })
         return PacketObservationDetails(routes,
-            root.optInt("observation_count", packet?.optInt("observation_count", observations.length()) ?: observations.length()))
+            root.optInt("observation_count", packet?.optInt("observation_count", observations.length()) ?: observations.length()),
+            loadSucceeded = true)
     }
 }
 

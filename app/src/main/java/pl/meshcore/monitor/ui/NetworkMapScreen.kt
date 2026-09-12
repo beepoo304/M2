@@ -283,6 +283,11 @@ fun NetworkMapScreen(
         }
         Text(status, Modifier.padding(start = 14.dp, top = 8.dp), style = MaterialTheme.typography.labelMedium,
             color = if (session?.running == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state.logicalDestinationUnavailable) Text(
+            "Destination ${state.selectedKey.take(4).uppercase()} · final RF hop unavailable",
+            Modifier.padding(horizontal = 14.dp), style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFFFFA726),
+        )
         Text(
             "Packets ${session?.events?.distinctBy { it.packetId }?.size ?: 0} · Routes ${session?.events?.size ?: 0} · Links ${state.edges.size} · MAX HOPS ${session?.events?.maxOfOrNull { (it.path.size - 1).coerceAtLeast(0) } ?: 0}",
             Modifier.padding(start = 14.dp, bottom = 6.dp), style = MaterialTheme.typography.labelSmall,

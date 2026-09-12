@@ -26,4 +26,22 @@ class MapRouteMapperTest {
         assertTrue(edges.all { it.uncertain })
         assertFalse(edges.any { it.from.hash.length != 4 || it.to.hash.length != 4 })
     }
+
+    @Test fun longestRouteIgnoresLongerBranchThatDoesNotBelongToSelectedKey() {
+        val belonging = MapRouteEvent("packet", "hash", 4, "", 1,
+            listOf("0652", "B282"), longestRouteEligible = true)
+        val unrelatedLongerBranch = MapRouteEvent("packet", "hash", 4, "", 1,
+            listOf("B282", "F480"), longestRouteEligible = false)
+
+        val metrics = MapRouteMapper.metrics(listOf(belonging, unrelatedLongerBranch), nodes)
+
+        assertEquals(listOf("0652", "B282"), metrics.longestRoute.map { it.hash })
+    }
+
+    @Test fun uncertainRouteNeverBecomesLongestRoute() {
+        val uncertain = MapRouteEvent("packet", "hash", 2, "", 1,
+            listOf("0652", "F480"), uncertainAttribution = true, longestRouteEligible = true)
+
+        assertTrue(MapRouteMapper.metrics(listOf(uncertain), nodes).longestRoute.isEmpty())
+    }
 }

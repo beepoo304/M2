@@ -52,5 +52,6 @@ class PacketObservationRepositoryTest {
         """))
         assertEquals("86e771b0616afd5d0fb0a9c3c085ad7d1b2e9a2cba0f03d6b1c1572d5e232b17",
             result.routes.single().resolvedPath.single())
+        assertTrue(result.loadSucceeded)
     }
 }

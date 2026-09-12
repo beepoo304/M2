@@ -62,8 +62,10 @@ import org.json.JSONObject
                     Text(packet.nodeName ?: packet.observerName, color = color, fontWeight = FontWeight.Medium, fontSize = 13.sp)
                     TrackedNameText(packet.detail, config.ownNodeNames, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp))
                     val matches = packet.trackedRelations.labels()
-                    if (matches.isNotEmpty()) Text(matches.joinToString("   "), color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp))
+                    if (matches.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        matches.forEach { match -> Text(match, color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp)) }
+                    }
                 }; HorizontalDivider()
             } }
         }
@@ -74,9 +76,8 @@ import org.json.JSONObject
     val context = LocalContext.current; val key = packet.publicKey.orEmpty().ifBlank { packet.observerPublicKey }
     val config by ConnectionConfigBus.config.collectAsState()
     var showAllRoutes by remember(packet.id) { mutableStateOf(false) }
-    val networkDetails by produceState<PacketObservationDetails?>(null, packet.id) {
-        value = PacketObservationRepository.load(packet.id)
-    }
+    var networkDetails by remember(packet.id) { mutableStateOf<PacketObservationDetails?>(null) }
+    LaunchedEffect(packet.id) { networkDetails = PacketObservationRepository.load(packet.id) }
     val decoded = remember(packet.decodedJson) {
         packet.decodedJson.takeIf { it.startsWith("{") }?.let { runCatching { JSONObject(it) }.getOrNull() }
     }
@@ -120,8 +121,17 @@ import org.json.JSONObject
                     Column {
                         val relations = routeRelations[route] ?: TrackedKeyRelations()
                         val exactObserver = relations.observerKeys.isNotEmpty()
+                        val observerHash = relations.observerKeys.singleOrNull()?.take(4)?.uppercase()
+                        val displayPath = route.path.toMutableList().apply {
+                            if (observerHash != null) when {
+                                lastOrNull().equals(observerHash, true) -> Unit
+                                lastOrNull()?.length == 2 && observerHash.startsWith(last(), true) ->
+                                    this[lastIndex] = observerHash
+                                else -> add(observerHash)
+                            }
+                        }
                         val highlightedRoute = buildAnnotatedString {
-                            route.path.forEachIndexed { index, hop ->
+                            displayPath.forEachIndexed { index, hop ->
                                 if (index > 0) append(" → ")
                                 val resolved = route.resolvedPath.getOrNull(index)
                                 val confirmedHop = TrackedKeyMatcher.exactFull(resolved, config.ownPublicKeys).isNotEmpty() ||
@@ -134,15 +144,9 @@ import org.json.JSONObject
                                     )) { append(hop) }
                                 } else append(hop)
                             }
-                            if (exactObserver) {
-                                append(" → ")
-                                withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)) {
-                                    append(relations.observerKeys.single().take(4).uppercase())
-                                }
-                            }
                         }
                         Text(highlightedRoute, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                        Text("${route.path.size} hops · ${route.rssi?.let { "$it dBm" } ?: "RSSI —"} · ${route.snr?.let { "$it dB" } ?: "SNR —"}", style = MaterialTheme.typography.labelSmall)
+                        Text("${(displayPath.size - 1).coerceAtLeast(0)} hops · ${route.rssi?.let { "$it dBm" } ?: "RSSI —"} · ${route.snr?.let { "$it dB" } ?: "SNR —"}", style = MaterialTheme.typography.labelSmall)
                         Text(
                             "Observed by ${route.observerName}${relations.observerKeys.singleOrNull()?.let { " · ${it.take(4).uppercase()}" }.orEmpty()}",
                             color = if (exactObserver) MaterialTheme.colorScheme.primary else Color.Unspecified,

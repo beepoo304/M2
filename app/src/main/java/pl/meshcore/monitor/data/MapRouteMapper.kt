@@ -10,7 +10,7 @@ object MapRouteMapper {
         val unique = edges(events, nodes)
         val total = unique.sumOf { distanceKm(it.from.lat, it.from.lon, it.to.lat, it.to.lon) }
         val routes = events.filter { event ->
-            !event.uncertainAttribution && event.path.all { it.length >= 4 }
+            event.longestRouteEligible && !event.uncertainAttribution && event.path.all { it.length >= 4 }
         }.map { withoutLoops(resolve(it.path, nodes)) }
             .filter { route -> route.size > 1 && route.none { it.uncertain } }
         val longestRoute = routes.maxByOrNull { route -> route.zipWithNext().sumOf { (a, b) ->

@@ -43,6 +43,8 @@ data class MapRouteEvent(
     val observedAt: Long,
     val path: List<String>,
     val uncertainAttribution: Boolean = false,
+    val longestRouteEligible: Boolean = true,
+    val logicalDestinationUnavailable: Boolean = false,
 )
 
 data class MapSession(
@@ -64,23 +66,29 @@ internal object MapSessionJson {
             put("payloadType", event.payloadType); put("timestamp", event.timestamp)
             put("observedAt", event.observedAt); put("path", JSONArray(event.path))
             put("uncertainAttribution", event.uncertainAttribution)
+            put("longestRouteEligible", event.longestRouteEligible)
+            put("logicalDestinationUnavailable", event.logicalDestinationUnavailable)
         }) } })
     }.toString()
 
     fun decode(raw: String, fallbackKey: String): MapSession = runCatching {
         val root = JSONObject(raw); val events = root.optJSONArray("events") ?: JSONArray()
+        val sessionKey = root.optString("key", fallbackKey)
         MapSession(
-            key = root.optString("key", fallbackKey),
+            key = sessionKey,
             filter = runCatching { MapPacketFilter.valueOf(root.optString("filter")) }.getOrDefault(MapPacketFilter.ANY),
             trackingMode = runCatching { MapTrackingMode.valueOf(root.optString("trackingMode")) }
                 .getOrDefault(MapTrackingMode.ALL_FOR_SELECTED_KEY),
             running = root.optBoolean("running"), startedAt = root.optLong("startedAt"),
             events = buildList { for (i in 0 until events.length()) events.optJSONObject(i)?.let { event ->
                 val path = event.optJSONArray("path") ?: JSONArray()
+                val eventPath = buildList { for (hop in 0 until path.length()) add(path.optString(hop)) }
+                val eligible = if (event.has("longestRouteEligible")) event.optBoolean("longestRouteEligible")
+                    else eventPath.any { hop -> hop.length >= 4 && sessionKey.startsWith(hop, true) }
                 add(MapRouteEvent(event.optString("packetId"), event.optString("packetHash"),
                     event.optInt("payloadType"), event.optString("timestamp"), event.optLong("observedAt"),
-                    buildList { for (hop in 0 until path.length()) add(path.optString(hop)) },
-                    event.optBoolean("uncertainAttribution")))
+                    eventPath, event.optBoolean("uncertainAttribution"), eligible,
+                    event.optBoolean("logicalDestinationUnavailable")))
             } },
         )
     }.getOrDefault(MapSession(fallbackKey))

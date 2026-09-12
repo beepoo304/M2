@@ -4,8 +4,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.os.Build
 import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
+import java.io.File
 
 object ExportLocationStore {
     private const val PREFS = "export_location"
@@ -29,6 +31,8 @@ object ExportLocationStore {
         val tree = selectedUri(context)
         if (!tree.isNullOrBlank()) return DocumentFile.fromTreeUri(context, Uri.parse(tree))?.listFiles()
             ?.mapNotNull { it.name }?.filter { it.startsWith(prefix) && it.endsWith(suffix) }.orEmpty()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return defaultDirectory().listFiles()
+            ?.map { it.name }?.filter { it.startsWith(prefix) && it.endsWith(suffix) }.orEmpty()
         val names = mutableListOf<String>()
         context.contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Downloads.DISPLAY_NAME),
@@ -53,6 +57,11 @@ object ExportLocationStore {
                 ?: error("Cannot write export file")
             return
         }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val directory = defaultDirectory().apply { if (!exists() && !mkdirs()) error("Cannot create Download/M2") }
+            File(directory, fileName).outputStream().use { it.write(content) }
+            return
+        }
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
             put(MediaStore.Downloads.MIME_TYPE, mimeType)
@@ -72,4 +81,8 @@ object ExportLocationStore {
         val marker = ".m2-folder"
         runCatching { write(context, marker, "text/plain", "M² export folder") }
     }
+
+    private fun defaultDirectory() = File(
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "M2"
+    )
 }

@@ -7,6 +7,7 @@ data class ConnectionConfig(
     val coreScopeBaseUrl: String = "https://live.meshcorekk.xyz",
     val ownPublicKeys: Set<String> = DEFAULT_OWN_PUBLIC_KEYS,
     val ownNodeNames: Set<String> = emptySet(),
+    val ownKeyNames: Map<String, String> = emptyMap(),
     val savedChannels: List<SavedChannel> = emptyList(),
 )
 

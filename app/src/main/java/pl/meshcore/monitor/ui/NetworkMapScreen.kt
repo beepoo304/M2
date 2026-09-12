@@ -266,13 +266,15 @@ fun NetworkMapScreen(
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (session?.running == true || animationRunning) Button({
                 if (animationRunning) animationToken = 0 else vm.stop()
-            }, Modifier.weight(1f)) {
-                Icon(Icons.Outlined.Stop, null); Spacer(Modifier.width(6.dp)); Text("Stop")
-            } else Button(vm::start, Modifier.weight(1f), enabled = state.selectedKey.isNotBlank()) {
-                Icon(Icons.Outlined.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Start")
+            }, Modifier.weight(1f).height(40.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) {
+                Icon(Icons.Outlined.Stop, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Stop")
+            } else Button(vm::start, Modifier.weight(1f).height(40.dp), enabled = state.selectedKey.isNotBlank(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) {
+                Icon(Icons.Outlined.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Start")
             }
-            OutlinedButton({ animationToken = 0; focusToken++; vm.restart() }, Modifier.weight(1f), enabled = state.selectedKey.isNotBlank()) {
-                Icon(Icons.Outlined.Refresh, null); Spacer(Modifier.width(6.dp)); Text("Restart")
+            OutlinedButton({ animationToken = 0; focusToken++; vm.restart() }, Modifier.weight(1f).height(40.dp),
+                enabled = state.selectedKey.isNotBlank(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) {
+                Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Restart")
             }
         }
 
@@ -283,26 +285,31 @@ fun NetworkMapScreen(
         }
         Text(status, Modifier.padding(start = 14.dp, top = 8.dp), style = MaterialTheme.typography.labelMedium,
             color = if (session?.running == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-        if (state.logicalDestinationUnavailable) Text(
-            "Destination ${state.selectedKey.take(4).uppercase()} · final RF hop unavailable",
-            Modifier.padding(horizontal = 14.dp), style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFFFFA726),
-        )
         Text(
-            "Packets ${session?.events?.distinctBy { it.packetId }?.size ?: 0} · Routes ${session?.events?.size ?: 0} · Links ${state.edges.size} · MAX HOPS ${session?.events?.maxOfOrNull { (it.path.size - 1).coerceAtLeast(0) } ?: 0}",
-            Modifier.padding(start = 14.dp, bottom = 6.dp), style = MaterialTheme.typography.labelSmall,
+            "Packets ${session?.events?.distinctBy { it.packetId }?.size ?: 0} · Routes ${session?.events?.size ?: 0} · Links ${state.edges.size}",
+            Modifier.padding(start = 14.dp), style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(Modifier.padding(start = 14.dp, bottom = 4.dp)) {
-            Text("Distance %.1f km · ".format(java.util.Locale.US, state.totalDistanceKm),
-                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "UNIQUE LINKS DISTANCE %.1f km".format(java.util.Locale.US, state.totalDistanceKm),
+            Modifier.padding(start = 14.dp), style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("MAX HOPS ${session?.events?.maxOfOrNull { (it.path.size - 1).coerceAtLeast(0) } ?: 0}",
+                maxLines = 1, style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = {
                 vm.stop()
                 vm.markLongestRouteViewed()
                 val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 capturePermission.launch(manager.createScreenCaptureIntent())
             }, enabled = state.longestRoute.size > 1,
-                modifier = Modifier.height(30.dp), shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.height(30.dp).widthIn(min = 184.dp), shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF2196F3)),
                 contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) {
                 val distance = "%.1f km".format(java.util.Locale.US, state.longestRouteKm)
@@ -495,8 +502,8 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                     map.overlays += Marker(map).apply {
                         position = GeoPoint(point.lat, point.lon)
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                        title = point.hash
-                        snippet = if (point.uncertain) "Possible 1-byte match" else "2-byte hash"
+                        title = if (point.uncertain) "${point.sourceHash} → ${point.hash}" else point.hash
+                        snippet = if (point.uncertain) "Possible 2-byte candidate for 1-byte hash" else "2-byte hash"
                         val dot = GradientDrawable().apply {
                             shape = GradientDrawable.OVAL
                             setColor(when {

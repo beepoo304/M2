@@ -21,7 +21,7 @@ object MapRouteMapper {
     }
     fun edges(events: List<MapRouteEvent>, nodes: List<LocatedNode>): List<MapEdge> {
         val aggregated = linkedMapOf<String, MapEdge>()
-        events.forEach { event ->
+        events.filter { event -> event.path.all { it.length >= 4 } }.forEach { event ->
             val points = resolve(event.path, nodes)
             points.zipWithNext().forEach { (from, to) ->
                 val uncertain = from.uncertain || to.uncertain || event.path.firstOrNull()?.length == 2 || event.uncertainAttribution
@@ -30,11 +30,19 @@ object MapRouteMapper {
                 val id = if (a <= b) "$a|$b" else "$b|$a"
                 val existing = aggregated[id]
                 aggregated[id] = if (existing == null) MapEdge(from, to, uncertain)
-                    else existing.copy(count = existing.count + 1, uncertain = existing.uncertain && uncertain)
+                    else existing.copy(
+                        from = mergePointCertainty(existing.from, from),
+                        to = mergePointCertainty(existing.to, to),
+                        count = existing.count + 1,
+                        uncertain = existing.uncertain && uncertain,
+                    )
             }
         }
         return aggregated.values.toList()
     }
+
+    private fun mergePointCertainty(first: MapNodePoint, next: MapNodePoint): MapNodePoint =
+        if (!first.uncertain || next.uncertain) first else next
 
     fun resolve(path: List<String>, nodes: List<LocatedNode>): List<MapNodePoint> {
         if (path.size < 2) return emptyList()
@@ -64,7 +72,9 @@ object MapRouteMapper {
         selected[path.lastIndex] = chosen
         for (index in path.lastIndex downTo 1) { chosen = parents[index - 1][chosen]; selected[index - 1] = chosen }
         return path.indices.map { index -> candidates[index][selected[index]].let {
-            MapNodePoint(it.publicKey.take(4), it.lat, it.lon, path[index].length == 2 || candidates[index].size > 1)
+            MapNodePoint(it.publicKey.take(4), it.lat, it.lon,
+                uncertain = path[index].length == 2,
+                sourceHash = path[index].uppercase())
         } }
     }
 
@@ -106,7 +116,8 @@ object MapRouteMapper {
                     options.minByOrNull { distanceKm(prior.lat, prior.lon, it.lat, it.lon) }
                 } ?: options.first()
                 resolved += MapNodePoint(selected.publicKey.take(4), selected.lat, selected.lon,
-                    path[index].length == 2 || options.size > 1)
+                    uncertain = path[index].length == 2,
+                    sourceHash = path[index].uppercase())
             }
         }
         return resolved

@@ -28,7 +28,8 @@ object SharedLiveRepository {
                 try {
                     ConnectionConfigBus.config.collectLatest { config ->
                         source?.close()
-                        val next = CoreScopeRepository(config.coreScopeBaseUrl, config.ownPublicKeys, config.ownNodeNames, config.savedChannels)
+                        val next = CoreScopeRepository(config.coreScopeBaseUrl, config.ownPublicKeys, config.ownNodeNames,
+                            config.ownKeyNames, config.savedChannels)
                         source = next
                         try {
                             launch { next.state.collect { _state.value = it } }

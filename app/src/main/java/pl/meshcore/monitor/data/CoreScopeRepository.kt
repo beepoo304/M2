@@ -69,6 +69,7 @@ class CoreScopeRepository(
     baseUrl: String = "https://live.meshcorekk.xyz",
     private val ownPublicKeys: Set<String> = emptySet(),
     private val ownNodeNames: Set<String> = emptySet(),
+    private val ownKeyNames: Map<String, String> = emptyMap(),
     private val savedChannels: List<SavedChannel> = emptyList(),
 ) : LiveSource {
     private val httpBase = baseUrl.trim().let {
@@ -191,7 +192,11 @@ class CoreScopeRepository(
                     } else {
                         semaphore.withPermit {
                             val details = PacketObservationRepository.load(packet.id)
-                            OwnTrafficClassifier.classify(details, ownPublicKeys).also { result ->
+                            val routeMatch = OwnTrafficClassifier.classify(details, ownPublicKeys)
+                            val namedMatch = if (details.routes.any { route ->
+                                    route.path.isEmpty() || route.path.all { it.length >= 4 }
+                                }) namedRelations(packet) else TrackedKeyRelations()
+                            OwnTrafficMatch(routeMatch.relations.merge(namedMatch)).also { result ->
                                 observationMatchCache[packet.id] = ObservationMatch(
                                     observationCount = packet.observationCount,
                                     match = result,
@@ -209,6 +214,18 @@ class CoreScopeRepository(
                 }
             }.awaitAll()
         }
+    }
+
+    private fun namedRelations(packet: LivePacket): TrackedKeyRelations {
+        val decoded = packet.decodedJson.takeIf { it.startsWith("{") }
+            ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return TrackedKeyRelations()
+        val sender = decoded.optString("sender").trim().lowercase()
+        val nodeName = decoded.optString("name").trim().lowercase()
+        val text = decoded.optString("text")
+        return TrackedKeyRelations(
+            sourceKeys = ownKeyNames.filterValues { it == sender || it == nodeName }.keys,
+            destinationKeys = ownKeyNames.filterValues { TrackedMention.contains(text, setOf(it)) }.keys,
+        )
     }
 
     private fun parsePacket(json: JSONObject?): LivePacket? {
@@ -235,30 +252,38 @@ class CoreScopeRepository(
             buildList { for (index in 0 until array.length()) add(array.optString(index)) }.filter(String::isNotBlank)
         }.getOrDefault(emptyList())
         val path = if (type == 9) MeshPath.normalizeTrace(rawPath) else MeshPath.normalize(rawPath)
-        val traceOwnTraffic = type == 9 && path.any { hop ->
+        val traceOwnTraffic = type == 9 && path.all { it.length >= 4 } && path.any { hop ->
             hop.length >= 4 && ownPublicKeys.any { it.startsWith(hop, ignoreCase = true) }
         }
         val decodedSource = TrackedKeyMatcher.exactFull(publicKey, ownPublicKeys)
         val decodedSourceHash = TrackedKeyMatcher.reliableHash(decoded?.optString("srcHash"), ownPublicKeys)
         val decodedDestination = TrackedKeyMatcher.exactFull(decoded?.optString("destKey"), ownPublicKeys) +
             TrackedKeyMatcher.reliableHash(decoded?.optString("destHash"), ownPublicKeys)
-        val directRoute = TrackedKeyMatcher.resolvedRoute(path, emptyList(), ownPublicKeys)
-        val directObserver = TrackedKeyMatcher.observer(json.optString("observer_id"), ownPublicKeys)
-        val directRelations = directRoute.merge(directObserver).merge(TrackedKeyRelations(
-            sourceKeys = decodedSource + decodedSourceHash,
-            destinationKeys = decodedDestination,
-        ))
+        val decodedSenderName = decoded?.optString("sender").orEmpty().trim().lowercase()
+        val decodedNodeName = decoded?.optString("name").orEmpty().trim().lowercase()
+        val messageText = decoded?.optString("text").orEmpty()
+        val namedSources = ownKeyNames.filterValues { it == decodedSenderName || it == decodedNodeName }.keys
+        val namedDestinations = ownKeyNames.filterValues { TrackedMention.contains(messageText, setOf(it)) }.keys
+        val trackablePath = path.isEmpty() || path.all { it.length >= 4 }
+        val directRelations = if (trackablePath) {
+            TrackedKeyMatcher.resolvedRoute(path, emptyList(), ownPublicKeys)
+                .merge(TrackedKeyMatcher.observer(json.optString("observer_id"), ownPublicKeys))
+                .merge(TrackedKeyRelations(
+                    sourceKeys = decodedSource + decodedSourceHash + namedSources,
+                    destinationKeys = decodedDestination + namedDestinations,
+                ))
+        } else TrackedKeyRelations()
         return LivePacket(
             id = json.optString("id"), hash = json.optString("hash"), time = WarsawTimeFormatter.time(json.optString("timestamp")),
             payloadType = type, typeLabel = payloadTypeName(type), observerName = observer,
             observerPublicKey = json.optString("observer_id"), nodeName = nodeName, nodeRole = role,
             detail = packetDetail(type, decoded, json.optString("raw_hex")), rawHex = json.optString("raw_hex"), publicKey = publicKey,
-            ownTraffic = directRelations.hasConfirmed || traceOwnTraffic ||
+            ownTraffic = directRelations.hasConfirmed || traceOwnTraffic || trackablePath && (
                 decoded?.optString("sender").orEmpty().trim().lowercase() in ownNodeNames ||
-                decoded?.optString("name").orEmpty().trim().lowercase() in ownNodeNames ||
-                TrackedMention.contains(decoded?.optString("text").orEmpty(), ownNodeNames),
-            possibleOwnTraffic = path.lastOrNull()?.length == 2 &&
-                MeshPath.endingKeys(path, ownPublicKeys).isNotEmpty(),
+                    decoded?.optString("name").orEmpty().trim().lowercase() in ownNodeNames ||
+                    TrackedMention.contains(decoded?.optString("text").orEmpty(), ownNodeNames)
+                ),
+            possibleOwnTraffic = false,
             timestamp = json.optString("timestamp"), decodedJson = decoded?.toString().orEmpty(), path = path,
             routeType = json.optNullableInt("route_type"), rssi = json.optNullableInt("rssi"), snr = json.optNullableDouble("snr"),
             observationCount = json.optInt("observation_count", 1), firstSeen = json.optString("first_seen"),
@@ -320,7 +345,8 @@ class CoreScopeRepository(
 internal object OwnTrafficClassifier {
     fun classify(details: PacketObservationDetails, ownPublicKeys: Set<String>): OwnTrafficMatch {
         val relations = details.routes.fold(TrackedKeyRelations()) { result, route ->
-            result.merge(TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, ownPublicKeys))
+            if (route.path.any { it.length < 4 }) result
+            else result.merge(TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, ownPublicKeys))
                 .merge(TrackedKeyMatcher.observer(route.observerPublicKey, ownPublicKeys))
         }
         return OwnTrafficMatch(relations)

@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
             coreScopeBaseUrl = prefs.getString("core_url", "https://live.meshcorekk.xyz")!!,
             ownPublicKeys = keys,
             ownNodeNames = keys.mapNotNull { prefs.getString("device_name_$it", null) }.map { it.trim().lowercase() }.toSet(),
+            ownKeyNames = keys.mapNotNull { key -> prefs.getString("device_name_$key", null)?.let { key to it.trim().lowercase() } }.toMap(),
             savedChannels = SecureChannelStore(this).load(),
         ))
         SharedLiveRepository.start()

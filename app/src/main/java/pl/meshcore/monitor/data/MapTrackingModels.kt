@@ -25,7 +25,13 @@ enum class MapTrackingMode(val label: String) {
     ALL_FOR_SELECTED_KEY("All for selected key"),
 }
 
-data class MapNodePoint(val hash: String, val lat: Double, val lon: Double, val uncertain: Boolean = false)
+data class MapNodePoint(
+    val hash: String,
+    val lat: Double,
+    val lon: Double,
+    val uncertain: Boolean = false,
+    val sourceHash: String = hash,
+)
 
 data class MapEdge(
     val from: MapNodePoint,

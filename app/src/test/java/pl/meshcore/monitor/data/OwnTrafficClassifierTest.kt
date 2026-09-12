@@ -44,7 +44,7 @@ class OwnTrafficClassifierTest {
     }
 
     @Test
-    fun oneByteEndingAloneIsOnlyAmbiguous() {
+    fun oneByteEndingAloneIsExcluded() {
         val details = PacketObservationDetails(routes = listOf(
             ObservedRoute(
                 path = listOf("7D", "19", "F4"),
@@ -54,11 +54,11 @@ class OwnTrafficClassifierTest {
         ))
 
         assertFalse(OwnTrafficClassifier.matches(details, setOf(ownKey)))
-        assertTrue(OwnTrafficClassifier.classify(details, setOf(ownKey)).possible)
+        assertFalse(OwnTrafficClassifier.classify(details, setOf(ownKey)).possible)
     }
 
     @Test
-    fun oneByteEndingIsConfirmedByFullObserverId() {
+    fun oneByteRouteIsExcludedEvenWithFullObserverId() {
         val details = PacketObservationDetails(routes = listOf(
             ObservedRoute(
                 path = listOf("7D", "19", "F4"),
@@ -67,7 +67,7 @@ class OwnTrafficClassifierTest {
             ),
         ))
 
-        assertTrue(OwnTrafficClassifier.matches(details, setOf(ownKey)))
+        assertFalse(OwnTrafficClassifier.matches(details, setOf(ownKey)))
         assertFalse(OwnTrafficClassifier.classify(details, setOf(ownKey)).possible)
     }
 

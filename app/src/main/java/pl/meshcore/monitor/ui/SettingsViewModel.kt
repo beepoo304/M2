@@ -54,6 +54,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         ownPublicKeys = prefs.getStringSet("own_public_keys", DEFAULT_OWN_PUBLIC_KEYS) ?: DEFAULT_OWN_PUBLIC_KEYS,
         ownNodeNames = (prefs.getStringSet("own_public_keys", DEFAULT_OWN_PUBLIC_KEYS) ?: DEFAULT_OWN_PUBLIC_KEYS)
             .mapNotNull { prefs.getString("device_name_$it", null) }.map { it.trim().lowercase() }.toSet(),
+        ownKeyNames = (prefs.getStringSet("own_public_keys", DEFAULT_OWN_PUBLIC_KEYS) ?: DEFAULT_OWN_PUBLIC_KEYS)
+            .mapNotNull { key -> prefs.getString("device_name_$key", null)?.let { key to it.trim().lowercase() } }.toMap(),
         savedChannels = SecureChannelStore(application).load(),
     ).also(ConnectionConfigBus::update)
 
@@ -380,6 +382,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         ConnectionConfigBus.update(ConnectionConfigBus.config.value.copy(
             ownPublicKeys = keys,
             ownNodeNames = _devices.value.map { it.name.trim().lowercase() }.filterNot { it.startsWith("looking up") }.toSet(),
+            ownKeyNames = _devices.value.filterNot { it.name.startsWith("Looking up") }
+                .associate { it.publicKey to it.name.trim().lowercase() },
         ))
     }
 
@@ -412,6 +416,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     ConnectionConfigBus.update(ConnectionConfigBus.config.value.copy(
                         ownNodeNames = _devices.value.map { it.name.trim().lowercase() }
                             .filterNot { it.startsWith("looking up") }.toSet(),
+                        ownKeyNames = _devices.value.filterNot { it.name.startsWith("Looking up") }
+                            .associate { it.publicKey to it.name.trim().lowercase() },
                     ))
                     return@launch
                 }
@@ -429,6 +435,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         ConnectionConfigBus.update(config.copy(
             ownNodeNames = _devices.value.map { it.name.trim().lowercase() }
                 .filterNot { it.startsWith("looking up") }.toSet(),
+            ownKeyNames = _devices.value.filterNot { it.name.startsWith("Looking up") }
+                .associate { it.publicKey to it.name.trim().lowercase() },
             savedChannels = ConnectionConfigBus.config.value.savedChannels,
         ))
         if (_neighbours.value != null && !previousApi.equals(config.coreScopeBaseUrl.trimEnd('/'), true)) {

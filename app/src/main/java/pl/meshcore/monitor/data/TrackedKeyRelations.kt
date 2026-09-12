@@ -50,23 +50,23 @@ object TrackedKeyMatcher {
         return savedKeys.filter { it.startsWith(normalized, true) }.singleOrNull()?.let(::setOf).orEmpty()
     }
 
-    /** A 1-byte hash stays explicitly uncertain even if only one saved key currently matches it. */
+    /** 1-byte hashes are intentionally excluded from tracked-key matching. */
     fun possibleOneByte(value: String?, savedKeys: Set<String>): Set<String> {
-        val normalized = value.orEmpty().trim()
-        if (normalized.length != 2) return emptySet()
-        return savedKeys.filter { it.startsWith(normalized, true) }.singleOrNull()?.let(::setOf).orEmpty()
+        return emptySet()
     }
 
     fun resolvedRoute(path: List<String>, resolvedPath: List<String>, savedKeys: Set<String>): TrackedKeyRelations {
         val confirmed = mutableSetOf<String>()
         val possible = mutableSetOf<String>()
         path.forEachIndexed { index, hop ->
+            if (hop.length < 4) return@forEachIndexed
             val resolved = resolvedPath.getOrNull(index)
             val fullMatch = exactFull(resolved, savedKeys)
-            if (fullMatch.isNotEmpty()) confirmed += fullMatch
+            // A resolver can suggest a full key for a 1-byte path entry, but the
+            // packet itself still does not contain enough bytes to confirm it.
+            if (hop.length >= 4 && fullMatch.isNotEmpty()) confirmed += fullMatch
             else {
                 confirmed += reliableHash(hop, savedKeys)
-                possible += possibleOneByte(hop, savedKeys)
             }
         }
         return TrackedKeyRelations(routeKeys = confirmed, possibleKeys = possible - confirmed)

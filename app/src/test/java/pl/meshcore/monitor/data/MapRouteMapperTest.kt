@@ -19,12 +19,10 @@ class MapRouteMapperTest {
         assertTrue(edges.all { !it.uncertain })
     }
 
-    @Test fun mapsOneByteRouteAsUncertainEdges() {
+    @Test fun excludesOneByteRouteCompletely() {
         val event = MapRouteEvent("1", "hash", 4, "", 1, listOf("06", "B2", "F4"))
         val edges = MapRouteMapper.edges(listOf(event), nodes)
-        assertEquals(2, edges.size)
-        assertTrue(edges.all { it.uncertain })
-        assertFalse(edges.any { it.from.hash.length != 4 || it.to.hash.length != 4 })
+        assertTrue(edges.isEmpty())
     }
 
     @Test fun longestRouteIgnoresLongerBranchThatDoesNotBelongToSelectedKey() {

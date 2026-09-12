@@ -66,6 +66,13 @@ import org.json.JSONObject
                         matches.forEach { match -> Text(match, color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp)) }
                     }
+                    if (packet.trackedRelations.possibleKeys.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        packet.trackedRelations.possibleKeys.forEach { key -> Text(
+                            "POSSIBLE · ${key.take(4).uppercase()} · 1-byte hash",
+                            color = Color(0xFFF0A84B), fontWeight = FontWeight.Medium,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                        ) }
+                    }
                 }; HorizontalDivider()
             } }
         }
@@ -101,7 +108,9 @@ import org.json.JSONObject
                         fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall) }
                 }
             }
-            val routes = networkDetails?.routes.orEmpty()
+            val allRoutes = networkDetails?.routes.orEmpty()
+            val excludedOneByteRoutes = allRoutes.count { route -> route.path.any { it.length < 4 } }
+            val routes = allRoutes.filter { route -> route.path.all { it.length >= 4 } }
             val routeRelations = routes.associateWith { route ->
                 TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, config.ownPublicKeys)
                     .merge(TrackedKeyMatcher.observer(route.observerPublicKey, config.ownPublicKeys))
@@ -110,6 +119,9 @@ import org.json.JSONObject
                 relation.hasConfirmed || relation.possibleKeys.isNotEmpty()
             } == true }
             val displayedRoutes = if (!showAllRoutes && trackedRoutes.isNotEmpty()) trackedRoutes else routes
+            if (excludedOneByteRoutes > 0) item {
+                Text("1-byte routes excluded: $excludedOneByteRoutes", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (networkDetails == null) {
                 item { Text("Route: ${packet.path.takeIf { it.isNotEmpty() }?.joinToString(" → ") ?: "Direct / unavailable"}") }
             } else if (routes.isEmpty()) {

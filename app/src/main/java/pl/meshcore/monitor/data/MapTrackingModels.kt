@@ -17,6 +17,14 @@ enum class MapPacketFilter(val label: String) {
     }
 }
 
+enum class MapTrackingMode(val label: String) {
+    STARTS_AT_KEY("Starts at key"),
+    ENDS_AT_KEY("Ends at key"),
+    RELATED_TO_KEY("Related to key"),
+    REPORTED_BY_KEY("Reported by key"),
+    ALL_FOR_SELECTED_KEY("All for selected key"),
+}
+
 data class MapNodePoint(val hash: String, val lat: Double, val lon: Double, val uncertain: Boolean = false)
 
 data class MapEdge(
@@ -40,6 +48,7 @@ data class MapRouteEvent(
 data class MapSession(
     val key: String,
     val filter: MapPacketFilter = MapPacketFilter.ANY,
+    val trackingMode: MapTrackingMode = MapTrackingMode.ALL_FOR_SELECTED_KEY,
     val running: Boolean = false,
     val startedAt: Long = 0L,
     val events: List<MapRouteEvent> = emptyList(),
@@ -47,7 +56,8 @@ data class MapSession(
 
 internal object MapSessionJson {
     fun encode(session: MapSession): String = JSONObject().apply {
-        put("key", session.key); put("filter", session.filter.name); put("running", session.running)
+        put("key", session.key); put("filter", session.filter.name); put("trackingMode", session.trackingMode.name)
+        put("running", session.running)
         put("startedAt", session.startedAt)
         put("events", JSONArray().apply { session.events.forEach { event -> put(JSONObject().apply {
             put("packetId", event.packetId); put("packetHash", event.packetHash)
@@ -62,6 +72,8 @@ internal object MapSessionJson {
         MapSession(
             key = root.optString("key", fallbackKey),
             filter = runCatching { MapPacketFilter.valueOf(root.optString("filter")) }.getOrDefault(MapPacketFilter.ANY),
+            trackingMode = runCatching { MapTrackingMode.valueOf(root.optString("trackingMode")) }
+                .getOrDefault(MapTrackingMode.ALL_FOR_SELECTED_KEY),
             running = root.optBoolean("running"), startedAt = root.optLong("startedAt"),
             events = buildList { for (i in 0 until events.length()) events.optJSONObject(i)?.let { event ->
                 val path = event.optJSONArray("path") ?: JSONArray()

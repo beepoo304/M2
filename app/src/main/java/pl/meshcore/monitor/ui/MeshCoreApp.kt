@@ -10,6 +10,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -23,7 +24,7 @@ private val appTabs = listOf(
 )
 
 @Composable fun MeshCoreApp(onCloseApp: () -> Unit) {
-    var selected by remember { mutableIntStateOf(0) }
+    var selected by rememberSaveable { mutableIntStateOf(0) }
     var mapFullscreen by remember { mutableStateOf(false) }
     val settings: SettingsViewModel = viewModel()
     val devices by settings.devices.collectAsState()

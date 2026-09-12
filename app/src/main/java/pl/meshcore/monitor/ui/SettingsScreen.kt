@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,6 +48,7 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
     val apiLog by vm.apiHealthLog.collectAsState()
     val apiOnline by vm.apiOnline.collectAsState()
     val exportLocation by vm.exportLocation.collectAsState()
+    val neighbours by vm.neighbours.collectAsState()
     var pendingExportLocation by rememberSaveable { mutableStateOf(exportLocation) }
     val chooseExportFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let {
@@ -56,6 +58,7 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
         }
     }
     if (showApiLog) ApiLogDialog(apiOnline, apiLog) { showApiLog = false }
+    neighbours?.let { DeviceNeighboursDialog(it, vm::refreshNeighbours, vm::closeNeighbours) }
     if (addApi) AlertDialog(
         onDismissRequest = { addApi = false },
         title = { Text("Add LIVE API") },
@@ -124,7 +127,7 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
             Button({ if (vm.addDevice(key)) key = "" else error = true }, Modifier.padding(vertical = 6.dp)) { Text("Add device") }
         }
         items(devices, key = { it.publicKey }) { device ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+            Row(Modifier.fillMaxWidth().clickable { vm.openNeighbours(device) }.padding(vertical = 5.dp)) {
                 Column(Modifier.weight(1f)) { Text(device.name, fontWeight = FontWeight.Medium)
                     Text("${device.publicKey.take(8)}…${device.publicKey.takeLast(6)}", fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -201,6 +204,45 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
 }
 
 @Composable
+private fun DeviceNeighboursDialog(state: DeviceNeighboursState, refresh: () -> Unit, close: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Column {
+            Text(state.deviceName, maxLines = 1)
+            Text(state.deviceKey.take(4).uppercase(), fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        } },
+        text = { Column {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("NEIGHBOURS (${state.neighbours.size})", fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f))
+                IconButton(refresh, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "Refresh neighbours") }
+            }
+            Text("Source: ${state.sourceApi}", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+            if (state.updatedAtMs > 0L) Text("Updated: ${apiLogTime(state.updatedAtMs)}",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            if (state.neighbours.isEmpty() && !state.loading) Text("No neighbours found")
+            else LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(state.neighbours, key = { it.hash }) { neighbour ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text("${neighbour.hash} · ${neighbour.name}", modifier = Modifier.weight(1f),
+                            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("${neighbour.count}×", fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+            }
+        } },
+        confirmButton = { TextButton(close) { Text("Close") } },
+    )
+}
+
+@Composable
 private fun ApiLogDialog(online: Boolean?, entries: List<ApiHealthEntry>, close: () -> Unit) {
     AlertDialog(
         onDismissRequest = close,
@@ -216,7 +258,7 @@ private fun ApiLogDialog(online: Boolean?, entries: List<ApiHealthEntry>, close:
                     },
                     fontWeight = FontWeight.Bold,
                 )
-                Text("Checked every 5 seconds", style = MaterialTheme.typography.labelSmall,
+                Text("Checked every 60 seconds · every 15 seconds during an outage", style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 HorizontalDivider(Modifier.padding(vertical = 10.dp))
                 if (entries.isEmpty()) {

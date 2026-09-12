@@ -42,6 +42,13 @@ class OwnTrafficLogStore(context: Context) {
                     matchedOwnKeys = item.optJSONArray("matchedOwnKeys")?.let { keys ->
                         buildSet { for (i in 0 until keys.length()) add(keys.optString(i)) }
                     }.orEmpty(),
+                    trackedRelations = TrackedKeyRelations(
+                        sourceKeys = item.stringSet("sourceKeys"),
+                        destinationKeys = item.stringSet("destinationKeys"),
+                        routeKeys = item.stringSet("routeKeys"),
+                        observerKeys = item.stringSet("observerKeys"),
+                        possibleKeys = item.stringSet("possibleKeys"),
+                    ),
                 ))
             }
         }
@@ -59,6 +66,11 @@ class OwnTrafficLogStore(context: Context) {
                 put("path", JSONArray(packet.path)); put("routeType", packet.routeType); put("rssi", packet.rssi)
                 put("snr", packet.snr); put("observationCount", packet.observationCount); put("firstSeen", packet.firstSeen)
                 put("matchedOwnKeys", JSONArray(packet.matchedOwnKeys.toList()))
+                put("sourceKeys", JSONArray(packet.trackedRelations.sourceKeys.toList()))
+                put("destinationKeys", JSONArray(packet.trackedRelations.destinationKeys.toList()))
+                put("routeKeys", JSONArray(packet.trackedRelations.routeKeys.toList()))
+                put("observerKeys", JSONArray(packet.trackedRelations.observerKeys.toList()))
+                put("possibleKeys", JSONArray(packet.trackedRelations.possibleKeys.toList()))
             })
         } }
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key()) }
@@ -89,3 +101,6 @@ class OwnTrafficLogStore(context: Context) {
 
 private fun JSONObject.optNullableInt(name: String): Int? = if (has(name) && !isNull(name)) optInt(name) else null
 private fun JSONObject.optNullableDouble(name: String): Double? = if (has(name) && !isNull(name)) optDouble(name) else null
+private fun JSONObject.stringSet(name: String): Set<String> = optJSONArray(name)?.let { values ->
+    buildSet { for (index in 0 until values.length()) values.optString(index).takeIf(String::isNotBlank)?.let(::add) }
+}.orEmpty()

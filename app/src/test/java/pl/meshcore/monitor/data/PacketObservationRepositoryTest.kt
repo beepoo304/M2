@@ -40,4 +40,17 @@ class PacketObservationRepositoryTest {
         assertEquals(2, result.routes.size)
         assertTrue(result.routes.any { it.observerPublicKey == "F480" })
     }
+
+    @Test fun preservesResolvedFullKeysForExactRouteMatching() {
+        val result = PacketObservationRepository.parse(JSONObject("""
+            {"observations":[{
+              "path_json":"[\"86E7\"]",
+              "resolved_path":["86e771b0616afd5d0fb0a9c3c085ad7d1b2e9a2cba0f03d6b1c1572d5e232b17"],
+              "observer_name":"F480",
+              "observer_id":"F4809C7817BC777124F638D32008AF197415BA1240C36C186F6EC80619775C68"
+            }]}
+        """))
+        assertEquals("86e771b0616afd5d0fb0a9c3c085ad7d1b2e9a2cba0f03d6b1c1572d5e232b17",
+            result.routes.single().resolvedPath.single())
+    }
 }

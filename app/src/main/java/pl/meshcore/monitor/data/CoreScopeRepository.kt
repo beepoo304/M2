@@ -46,6 +46,7 @@ data class LivePacket(
     val observationCount: Int = 1,
     val firstSeen: String = "",
     val matchedOwnKeys: Set<String> = emptySet(),
+    val trackedRelations: TrackedKeyRelations = TrackedKeyRelations(),
 )
 
 enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED, ERROR }
@@ -90,16 +91,20 @@ class CoreScopeRepository(
         connectWebSocket()
         var lastPoll = System.currentTimeMillis()
         var lastReconnect = System.currentTimeMillis()
-        var pollInterval = 2_000L
+        var failureBackoff = 0L
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
-            if (refreshRequested.getAndSet(false)) pollInterval = if (refreshPackets()) 2_000L else minOf(pollInterval * 2, 30_000L)
+            if (refreshRequested.getAndSet(false)) {
+                failureBackoff = if (refreshPackets()) 0L else nextBackoff(failureBackoff)
+                lastPoll = System.currentTimeMillis()
+            }
             if (reconnectRequested.get() && System.currentTimeMillis() - lastReconnect >= 5_000) {
                 reconnectRequested.set(false)
                 connectWebSocket()
                 lastReconnect = System.currentTimeMillis()
             }
+            val pollInterval = if (failureBackoff > 0L) failureBackoff else TrafficRefreshPolicy.liveIntervalMs()
             if (System.currentTimeMillis() - lastPoll >= pollInterval) {
-                pollInterval = if (refreshPackets()) 2_000L else minOf(pollInterval * 2, 30_000L)
+                failureBackoff = if (refreshPackets()) 0L else nextBackoff(failureBackoff)
                 lastPoll = System.currentTimeMillis()
             }
             delay(750)
@@ -107,6 +112,11 @@ class CoreScopeRepository(
     }
 
     override suspend fun refresh() { refreshPackets() }
+
+    private fun nextBackoff(previous: Long): Long = when {
+        previous <= 0L -> TrafficRefreshPolicy.FOREGROUND_INTERVAL_MS * 2
+        else -> minOf(previous * 2, 30_000L)
+    }
     override fun close() {
         stopped.set(true)
         socket?.close(1000, "App closed")
@@ -170,7 +180,7 @@ class CoreScopeRepository(
         return coroutineScope {
             packets.map { packet ->
                 async {
-                    if (packet.ownTraffic || packet.observationCount <= 1) return@async packet
+                    if (packet.observationCount <= 1) return@async packet
 
                     val cached = observationMatchCache[packet.id]
                     val cacheIsFresh = cached != null &&
@@ -191,9 +201,10 @@ class CoreScopeRepository(
                         }
                     }
                     packet.copy(
-                        ownTraffic = packet.ownTraffic || match.confirmed,
-                        possibleOwnTraffic = !packet.ownTraffic && !match.confirmed && match.possible,
-                        matchedOwnKeys = packet.matchedOwnKeys + match.confirmedKeys,
+                        ownTraffic = packet.ownTraffic || match.relations.hasConfirmed,
+                        possibleOwnTraffic = !packet.ownTraffic && !match.relations.hasConfirmed && match.relations.possibleKeys.isNotEmpty(),
+                        matchedOwnKeys = packet.matchedOwnKeys + match.relations.confirmedKeys,
+                        trackedRelations = packet.trackedRelations.merge(match.relations),
                     )
                 }
             }.awaitAll()
@@ -227,19 +238,22 @@ class CoreScopeRepository(
         val traceOwnTraffic = type == 9 && path.any { hop ->
             hop.length >= 4 && ownPublicKeys.any { it.startsWith(hop, ignoreCase = true) }
         }
-        val directlyMatchedKeys = ownPublicKeys.filterTo(mutableSetOf()) { key ->
-            publicKey?.equals(key, true) == true ||
-                json.optString("observer_id").equals(key, true) ||
-                (type == 9 && path.any { it.length >= 4 && key.startsWith(it, true) })
-        }
+        val decodedSource = TrackedKeyMatcher.exactFull(publicKey, ownPublicKeys)
+        val decodedSourceHash = TrackedKeyMatcher.reliableHash(decoded?.optString("srcHash"), ownPublicKeys)
+        val decodedDestination = TrackedKeyMatcher.exactFull(decoded?.optString("destKey"), ownPublicKeys) +
+            TrackedKeyMatcher.reliableHash(decoded?.optString("destHash"), ownPublicKeys)
+        val directRoute = TrackedKeyMatcher.resolvedRoute(path, emptyList(), ownPublicKeys)
+        val directObserver = TrackedKeyMatcher.observer(json.optString("observer_id"), ownPublicKeys)
+        val directRelations = directRoute.merge(directObserver).merge(TrackedKeyRelations(
+            sourceKeys = decodedSource + decodedSourceHash,
+            destinationKeys = decodedDestination,
+        ))
         return LivePacket(
             id = json.optString("id"), hash = json.optString("hash"), time = WarsawTimeFormatter.time(json.optString("timestamp")),
             payloadType = type, typeLabel = payloadTypeName(type), observerName = observer,
             observerPublicKey = json.optString("observer_id"), nodeName = nodeName, nodeRole = role,
             detail = packetDetail(type, decoded, json.optString("raw_hex")), rawHex = json.optString("raw_hex"), publicKey = publicKey,
-            ownTraffic = publicKey?.lowercase() in ownPublicKeys ||
-                traceOwnTraffic ||
-                json.optString("observer_id").lowercase() in ownPublicKeys ||
+            ownTraffic = directRelations.hasConfirmed || traceOwnTraffic ||
                 decoded?.optString("sender").orEmpty().trim().lowercase() in ownNodeNames ||
                 decoded?.optString("name").orEmpty().trim().lowercase() in ownNodeNames ||
                 TrackedMention.contains(decoded?.optString("text").orEmpty(), ownNodeNames),
@@ -248,7 +262,8 @@ class CoreScopeRepository(
             timestamp = json.optString("timestamp"), decodedJson = decoded?.toString().orEmpty(), path = path,
             routeType = json.optNullableInt("route_type"), rssi = json.optNullableInt("rssi"), snr = json.optNullableDouble("snr"),
             observationCount = json.optInt("observation_count", 1), firstSeen = json.optString("first_seen"),
-            matchedOwnKeys = directlyMatchedKeys,
+            matchedOwnKeys = directRelations.confirmedKeys,
+            trackedRelations = directRelations,
         )
     }
 
@@ -297,37 +312,31 @@ class CoreScopeRepository(
 
     private companion object {
         const val LIVE_LOG_LIMIT = 250
-        const val MAX_OBSERVATION_REQUESTS = 6
-        const val NEGATIVE_MATCH_TTL_MS = 30_000L
+        const val MAX_OBSERVATION_REQUESTS = 2
+        const val NEGATIVE_MATCH_TTL_MS = 5 * 60_000L
     }
 }
 
 internal object OwnTrafficClassifier {
     fun classify(details: PacketObservationDetails, ownPublicKeys: Set<String>): OwnTrafficMatch {
-        val confirmedKeys = details.routes.flatMapTo(mutableSetOf()) { route ->
-            ownPublicKeys.filter { key ->
-                route.observerPublicKey.equals(key, true) ||
-                    (route.path.lastOrNull()?.length?.let { it >= 4 } == true &&
-                        key.startsWith(route.path.last(), true))
-            }
+        val relations = details.routes.fold(TrackedKeyRelations()) { result, route ->
+            result.merge(TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, ownPublicKeys))
+                .merge(TrackedKeyMatcher.observer(route.observerPublicKey, ownPublicKeys))
         }
-        val confirmed = confirmedKeys.isNotEmpty()
-        val possible = !confirmed && details.routes.any { route ->
-            route.path.lastOrNull()?.length == 2 &&
-                MeshPath.endingKeys(route.path, ownPublicKeys).isNotEmpty()
-        }
-        return OwnTrafficMatch(confirmed, possible, confirmedKeys)
+        return OwnTrafficMatch(relations)
     }
 
     fun matches(details: PacketObservationDetails, ownPublicKeys: Set<String>): Boolean =
-        classify(details, ownPublicKeys).confirmed
+        classify(details, ownPublicKeys).relations.hasConfirmed
 }
 
 internal data class OwnTrafficMatch(
-    val confirmed: Boolean,
-    val possible: Boolean,
-    val confirmedKeys: Set<String> = emptySet(),
-)
+    val relations: TrackedKeyRelations,
+) {
+    val confirmed: Boolean get() = relations.hasConfirmed
+    val possible: Boolean get() = relations.possibleKeys.isNotEmpty()
+    val confirmedKeys: Set<String> get() = relations.confirmedKeys
+}
 
 internal object TrackedMention {
     fun contains(text: String, nodeNames: Set<String>): Boolean {

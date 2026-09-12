@@ -26,6 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
@@ -77,13 +78,13 @@ fun OwnTrafficLogScreen(
                     Column(Modifier.fillMaxWidth().clickable { selected = packet }
                         .padding(horizontal = 16.dp, vertical = 9.dp)) {
                         Row {
-                            Text(packet.typeLabel, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            Text(packet.typeLabel, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             Spacer(Modifier.weight(1f))
                             Text(packet.time, style = MaterialTheme.typography.labelSmall)
                         }
-                        Text(packet.nodeName ?: packet.observerName, fontWeight = FontWeight.Medium)
+                        Text(packet.nodeName ?: packet.observerName, fontWeight = FontWeight.Medium, fontSize = 13.sp)
                         TrackedNameText(packet.detail, config.ownNodeNames,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))

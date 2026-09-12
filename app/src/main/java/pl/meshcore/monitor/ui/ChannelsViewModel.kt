@@ -165,7 +165,7 @@ class ChannelsViewModel(application: Application) : AndroidViewModel(application
 
     private companion object {
         const val MAX_CHANNELS = 50
-        const val CHANNEL_REFRESH_INTERVAL_MS = 60_000L
+        const val CHANNEL_REFRESH_INTERVAL_MS = 10 * 60_000L
         const val LOCAL_REFRESH_INTERVAL_MS = 2_000L
     }
 }

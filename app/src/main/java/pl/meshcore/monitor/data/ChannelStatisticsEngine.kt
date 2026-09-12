@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -48,6 +49,12 @@ object ChannelStatisticsEngine {
     fun refreshNow() {
         if (!::appContext.isInitialized || _refreshing.value) return
         scope.launch { refresh() }
+    }
+
+    suspend fun stop() {
+        job?.cancelAndJoin()
+        job = null
+        _refreshing.value = false
     }
 
     private suspend fun refresh() {

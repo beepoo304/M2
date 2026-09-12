@@ -9,6 +9,9 @@ import kotlinx.coroutines.launch
 import pl.meshcore.monitor.data.LivePacket
 import pl.meshcore.monitor.data.SharedLiveRepository
 import pl.meshcore.monitor.data.OwnTrafficLogStore
+import pl.meshcore.monitor.data.ConnectionConfigBus
+import pl.meshcore.monitor.data.TrackedMention
+import org.json.JSONObject
 import java.time.Instant
 
 class OwnTrafficLogViewModel(application: Application) : AndroidViewModel(application) {
@@ -27,8 +30,9 @@ class OwnTrafficLogViewModel(application: Application) : AndroidViewModel(applic
             SharedLiveRepository.state.collect { state ->
                 var changed = false
                 var containsNewEntry = false
+                val trackedNames = ConnectionConfigBus.config.value.ownNodeNames
                 state.packets.asReversed().filter { packet ->
-                    packet.ownTraffic && packet.id !in ignoredIds && packet.epochMillis() > clearedAt
+                    packet.belongsInMyLog(trackedNames) && packet.id !in ignoredIds && packet.epochMillis() > clearedAt
                 }.forEach { packet ->
                     if (entries[packet.id] != packet) {
                         containsNewEntry = containsNewEntry || packet.id !in entries
@@ -63,3 +67,16 @@ class OwnTrafficLogViewModel(application: Application) : AndroidViewModel(applic
 }
 
 private fun LivePacket.epochMillis(): Long = runCatching { Instant.parse(timestamp).toEpochMilli() }.getOrDefault(Long.MAX_VALUE)
+
+private fun LivePacket.belongsInMyLog(trackedNames: Set<String>): Boolean {
+    val relations = trackedRelations
+    if (relations.sourceKeys.isNotEmpty() || relations.destinationKeys.isNotEmpty() || relations.routeKeys.isNotEmpty()) return true
+    if (possibleOwnTraffic) return false
+    val decoded = decodedJson.takeIf { it.startsWith("{") }
+        ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return false
+    val sender = decoded.optString("sender").trim()
+    val name = decoded.optString("name").trim()
+    val text = decoded.optString("text")
+    return trackedNames.any { it.equals(sender, true) || it.equals(name, true) } ||
+        TrackedMention.contains(text, trackedNames)
+}

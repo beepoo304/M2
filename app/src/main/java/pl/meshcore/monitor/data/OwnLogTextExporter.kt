@@ -34,6 +34,8 @@ object OwnLogTextExporter {
             appendLine("Observer public key: ${packet.observerPublicKey}")
             appendLine("Own traffic: ${packet.ownTraffic}")
             appendLine("Possible own traffic: ${packet.possibleOwnTraffic}")
+            appendLine("Tracked key matches: ${packet.trackedRelations.labels().joinToString(" | ")}")
+            appendLine("Possible tracked keys: ${packet.trackedRelations.possibleKeys.joinToString { it.take(4).uppercase() }}")
             appendLine("Route: ${packet.path.joinToString(" -> ")}")
             appendLine("Route type: ${packet.routeType?.toString().orEmpty()}")
             appendLine("RSSI: ${packet.rssi?.toString().orEmpty()}")

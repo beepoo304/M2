@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import pl.meshcore.monitor.data.*
 import org.json.JSONObject
@@ -57,9 +58,12 @@ import org.json.JSONObject
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
                 Column(Modifier.fillMaxWidth().clickable { selected = packet }.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                    Row { Text(packet.time, color = color, fontFamily = FontFamily.Monospace); Spacer(Modifier.weight(1f)); Text(packet.typeLabel, color = color) }
-                    Text(packet.nodeName ?: packet.observerName, color = color, fontWeight = FontWeight.Medium)
-                    TrackedNameText(packet.detail, config.ownNodeNames, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall)
+                    Row { Text(packet.time, color = color, fontFamily = FontFamily.Monospace, fontSize = 13.sp); Spacer(Modifier.weight(1f)); Text(packet.typeLabel, color = color, fontSize = 13.sp) }
+                    Text(packet.nodeName ?: packet.observerName, color = color, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    TrackedNameText(packet.detail, config.ownNodeNames, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp))
+                    val matches = packet.trackedRelations.labels()
+                    if (matches.isNotEmpty()) Text(matches.joinToString("   "), color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp))
                 }; HorizontalDivider()
             } }
         }
@@ -76,7 +80,8 @@ import org.json.JSONObject
     val decoded = remember(packet.decodedJson) {
         packet.decodedJson.takeIf { it.startsWith("{") }?.let { runCatching { JSONObject(it) }.getOrNull() }
     }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(packet.nodeName ?: packet.observerName) }, text = {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(packet.nodeName ?: packet.observerName, fontSize = 16.sp) }, text = {
+        ProvideTextStyle(MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Text("${packet.typeLabel} · ${packet.time}") }
             if (packet.payloadType == 5) {
@@ -87,8 +92,22 @@ import org.json.JSONObject
                 if (sender.isNotBlank()) item { Text("Sender: $sender") }
                 item { Text(if (message.isNotBlank()) message else "Message content is not available", color = Color(0xFF2196F3)) }
             }
+            val packetMatchLabels = packet.trackedRelations.labels()
+            if (packetMatchLabels.isNotEmpty()) item {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Tracked key matches", fontWeight = FontWeight.Medium)
+                    packetMatchLabels.forEach { label -> Text(label, color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall) }
+                }
+            }
             val routes = networkDetails?.routes.orEmpty()
-            val trackedRoutes = routes.filter { MeshPath.endingKeys(it.path, config.ownPublicKeys).isNotEmpty() }
+            val routeRelations = routes.associateWith { route ->
+                TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, config.ownPublicKeys)
+                    .merge(TrackedKeyMatcher.observer(route.observerPublicKey, config.ownPublicKeys))
+            }
+            val trackedRoutes = routes.filter { routeRelations[it]?.let { relation ->
+                relation.hasConfirmed || relation.possibleKeys.isNotEmpty()
+            } == true }
             val displayedRoutes = if (!showAllRoutes && trackedRoutes.isNotEmpty()) trackedRoutes else routes
             if (networkDetails == null) {
                 item { Text("Route: ${packet.path.takeIf { it.isNotEmpty() }?.joinToString(" → ") ?: "Direct / unavailable"}") }
@@ -99,36 +118,46 @@ import org.json.JSONObject
                 MeshPath.hashSizeBytes(routes.map { it.path })?.let { bytes -> item { Text("Path hashes: $bytes ${if (bytes == 1) "byte" else "bytes"} per hop", style = MaterialTheme.typography.bodySmall) } }
                 items(displayedRoutes) { route ->
                     Column {
-                        val endingKeys = MeshPath.endingKeys(route.path, config.ownPublicKeys)
-                        val exactObserver = MeshPath.hasExactObserver(route, config.ownPublicKeys)
-                        val reliableEnding = MeshPath.hasReliableEnding(route.path, config.ownPublicKeys)
-                        val confirmed = exactObserver || reliableEnding
-                        val possibleOneByte = !confirmed && route.path.lastOrNull()?.length == 2 && endingKeys.isNotEmpty()
+                        val relations = routeRelations[route] ?: TrackedKeyRelations()
+                        val exactObserver = relations.observerKeys.isNotEmpty()
                         val highlightedRoute = buildAnnotatedString {
                             route.path.forEachIndexed { index, hop ->
                                 if (index > 0) append(" → ")
-                                if ((confirmed || possibleOneByte) && index == route.path.lastIndex) {
-                                    val hopColor = if (confirmed) MaterialTheme.colorScheme.primary else Color(0xFFF0A84B)
-                                    withStyle(SpanStyle(color = hopColor, fontWeight = FontWeight.Bold)) { append(hop) }
+                                val resolved = route.resolvedPath.getOrNull(index)
+                                val confirmedHop = TrackedKeyMatcher.exactFull(resolved, config.ownPublicKeys).isNotEmpty() ||
+                                    TrackedKeyMatcher.reliableHash(hop, config.ownPublicKeys).isNotEmpty()
+                                val possibleHop = !confirmedHop && TrackedKeyMatcher.possibleOneByte(hop, config.ownPublicKeys).isNotEmpty()
+                                if (confirmedHop || possibleHop) {
+                                    withStyle(SpanStyle(
+                                        color = if (confirmedHop) MaterialTheme.colorScheme.primary else Color(0xFFF0A84B),
+                                        fontWeight = FontWeight.Bold,
+                                    )) { append(hop) }
                                 } else append(hop)
+                            }
+                            if (exactObserver) {
+                                append(" → ")
+                                withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)) {
+                                    append(relations.observerKeys.single().take(4).uppercase())
+                                }
                             }
                         }
                         Text(highlightedRoute, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                         Text("${route.path.size} hops · ${route.rssi?.let { "$it dBm" } ?: "RSSI —"} · ${route.snr?.let { "$it dB" } ?: "SNR —"}", style = MaterialTheme.typography.labelSmall)
                         Text(
-                            "Observed by ${route.observerName}",
+                            "Observed by ${route.observerName}${relations.observerKeys.singleOrNull()?.let { " · ${it.take(4).uppercase()}" }.orEmpty()}",
                             color = if (exactObserver) MaterialTheme.colorScheme.primary else Color.Unspecified,
                             fontWeight = if (exactObserver) FontWeight.Bold else FontWeight.Normal,
                             style = MaterialTheme.typography.labelSmall,
                         )
-                        if (exactObserver) Text(
-                            "Confirmed tracked observer",
+                        val relationLabels = relations.labels()
+                        if (relationLabels.isNotEmpty()) Text(
+                            relationLabels.joinToString("   "),
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.labelSmall,
                         )
-                        if (possibleOneByte) Text(
-                            "Possible tracked key: ${endingKeys.joinToString { it.take(4).uppercase() + "…" }} (1-byte hash)",
+                        if (relations.possibleKeys.isNotEmpty()) Text(
+                            "Possible tracked key: ${relations.possibleKeys.joinToString { it.take(4).uppercase() + "…" }} (1-byte hash)",
                             color = Color(0xFFF0A84B),
                             style = MaterialTheme.typography.labelSmall,
                         )
@@ -144,7 +173,7 @@ import org.json.JSONObject
             item { Text("Observer: ${packet.observerName}") }
             item { Text("Hash: ${packet.hash}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall) }
             item { Text("Raw: ${packet.rawHex}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall, maxLines = 6) }
-        }
+        } }
     }, confirmButton = { Column {
         TextButton(enabled = packet.hash.isNotBlank(), onClick = {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

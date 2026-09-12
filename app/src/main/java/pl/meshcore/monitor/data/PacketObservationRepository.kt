@@ -14,6 +14,7 @@ data class PacketObservationDetails(
 
 data class ObservedRoute(
     val path: List<String>,
+    val resolvedPath: List<String> = emptyList(),
     val observerName: String,
     val observerPublicKey: String = "",
     val rssi: Int? = null,
@@ -46,8 +47,12 @@ object PacketObservationRepository {
                     for (hop in 0 until array.length()) add(array.optString(hop))
                 }.filter(String::isNotBlank)
                 val route = if (trace) MeshPath.normalizeTrace(parts) else MeshPath.normalize(parts)
+                val resolved = observation.optJSONArray("resolved_path")?.let { values ->
+                    buildList { for (hop in 0 until values.length()) add(values.optString(hop)) }
+                }.orEmpty()
                 add(ObservedRoute(
                     path = route,
+                    resolvedPath = resolved,
                     observerName = observation.optString("observer_name").ifBlank { "Unknown observer" },
                     observerPublicKey = observation.optString("observer_id"),
                     rssi = observation.optNullableInt("rssi"),

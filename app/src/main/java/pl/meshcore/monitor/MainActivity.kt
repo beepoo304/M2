@@ -17,10 +17,23 @@ import pl.meshcore.monitor.data.DEFAULT_OWN_PUBLIC_KEYS
 import pl.meshcore.monitor.data.SharedLiveRepository
 import pl.meshcore.monitor.data.SecureChannelStore
 import pl.meshcore.monitor.data.ChannelStatisticsEngine
+import pl.meshcore.monitor.data.TrafficRefreshPolicy
+import pl.meshcore.monitor.data.AppPacketStatisticsEngine
 import pl.meshcore.monitor.ui.MeshCoreApp
 import pl.meshcore.monitor.ui.theme.MeshCoreTheme
 
 class MainActivity : ComponentActivity() {
+    override fun onStart() {
+        super.onStart()
+        TrafficRefreshPolicy.appVisible = true
+        lifecycleScope.launch { SharedLiveRepository.refresh() }
+    }
+
+    override fun onStop() {
+        TrafficRefreshPolicy.appVisible = false
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("connection_settings", MODE_PRIVATE)
@@ -33,6 +46,7 @@ class MainActivity : ComponentActivity() {
         ))
         SharedLiveRepository.start()
         ChannelStatisticsEngine.start(this)
+        AppPacketStatisticsEngine.start(this)
         ContextCompat.startForegroundService(this, Intent(this, LiveListenerService::class.java))
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
@@ -45,11 +59,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closeApp() {
-        lifecycleScope.launch {
-            stopService(Intent(this@MainActivity, LiveListenerService::class.java))
-            NetworkModule.client.dispatcher.cancelAll()
-            SharedLiveRepository.stop()
-            finishAndRemoveTask()
-        }
+        startService(Intent(this, LiveListenerService::class.java).setAction(LiveListenerService.ACTION_CLOSE_APP))
+        stopService(Intent(this, ScreenRecordingService::class.java))
+        finishAndRemoveTask()
     }
 }

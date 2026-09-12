@@ -6,6 +6,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.os.PowerManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.core.app.NotificationCompat
@@ -17,18 +21,33 @@ import pl.meshcore.monitor.data.SharedLiveRepository
 import pl.meshcore.monitor.data.SecureChannelStore
 import pl.meshcore.monitor.data.ChannelMessage
 import pl.meshcore.monitor.data.ChannelStatisticsEngine
+import pl.meshcore.monitor.data.TrafficRefreshPolicy
+import pl.meshcore.monitor.data.AppPacketStatisticsEngine
+import pl.meshcore.monitor.data.NetworkModule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 
 class LiveListenerService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cachedPacketIds = LinkedHashSet<String>()
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            TrafficRefreshPolicy.screenInteractive = intent?.action != Intent.ACTION_SCREEN_OFF
+        }
+    }
     override fun onCreate() {
         super.onCreate()
+        TrafficRefreshPolicy.screenInteractive = getSystemService(PowerManager::class.java).isInteractive
+        TrafficRefreshPolicy.restoreMapTrackingState(this)
+        ContextCompat.registerReceiver(this, screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
         val prefs = getSharedPreferences("connection_settings", MODE_PRIVATE)
         val keys = prefs.getStringSet("own_public_keys", DEFAULT_OWN_PUBLIC_KEYS) ?: DEFAULT_OWN_PUBLIC_KEYS
         ConnectionConfigBus.update(ConnectionConfig(
@@ -59,6 +78,7 @@ class LiveListenerService : Service() {
         startForeground(NOTIFICATION_ID, notification)
         SharedLiveRepository.start()
         ChannelStatisticsEngine.start(this)
+        AppPacketStatisticsEngine.start(this)
         val channelStore = SecureChannelStore(this)
         scope.launch {
             SharedLiveRepository.state.collect { state ->
@@ -93,13 +113,32 @@ class LiveListenerService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CLOSE_APP) {
+            scope.launch {
+                NetworkModule.client.dispatcher.cancelAll()
+                SharedLiveRepository.stop()
+                ChannelStatisticsEngine.stop()
+                AppPacketStatisticsEngine.stop()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                delay(200)
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }
+        }
+        return START_NOT_STICKY
+    }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(screenReceiver) }
+        scope.cancel()
+        super.onDestroy()
+    }
 
-    private companion object {
+    companion object {
         const val CHANNEL_ID = "m2_live_listener"
         const val NOTIFICATION_ID = 2202
         const val SEEN_PACKET_LIMIT = 500
+        const val ACTION_CLOSE_APP = "pl.meshcore.monitor.action.CLOSE_APP"
     }
 }

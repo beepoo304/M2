@@ -44,8 +44,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
@@ -59,7 +63,7 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import pl.meshcore.monitor.data.MapEdge
-import pl.meshcore.monitor.data.MapPacketFilter
+import pl.meshcore.monitor.data.MapTrackingMode
 import pl.meshcore.monitor.data.MapFileStore
 import pl.meshcore.monitor.data.ExportLocationStore
 import pl.meshcore.monitor.data.MapNodePoint
@@ -138,7 +142,10 @@ fun NetworkMapScreen(
         fileBusy = false
     }
     LaunchedEffect(devices) {
-        if (state.selectedKey.isBlank() && devices.isNotEmpty()) vm.select(devices.first().publicKey, devices.first().name)
+        if (state.selectedKey.isBlank() && devices.isNotEmpty()) {
+            val initial = devices.firstOrNull { it.publicKey.equals(vm.lastSelectedKey, true) } ?: devices.first()
+            vm.select(initial.publicKey, initial.name)
+        }
     }
     val selectedDevice = devices.firstOrNull { it.publicKey == state.selectedKey }
     LaunchedEffect(exportMessage) {
@@ -218,15 +225,21 @@ fun NetworkMapScreen(
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                ExposedDropdownMenuBox(filterMenu, { filterMenu = !filterMenu }, Modifier.weight(1f)) {
+                ExposedDropdownMenuBox(filterMenu, {
+                    if (state.session?.running != true) filterMenu = !filterMenu
+                }, Modifier.weight(1f)) {
                     OutlinedTextField(
-                        value = state.session?.filter?.label.orEmpty(), onValueChange = {}, readOnly = true,
-                        label = { Text("Packet type") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(filterMenu) },
+                        value = state.session?.trackingMode?.label.orEmpty(), onValueChange = {}, readOnly = true,
+                        label = { Text("Traffic mode", fontSize = 10.sp) },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(filterMenu) },
                         modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(), singleLine = true,
+                        enabled = state.session?.running != true,
                     )
                     ExposedDropdownMenu(filterMenu, { filterMenu = false }) {
-                        MapPacketFilter.entries.forEach { filter -> DropdownMenuItem(
-                            text = { Text(filter.label) }, onClick = { vm.setFilter(filter); filterMenu = false },
+                        MapTrackingMode.entries.forEach { mode -> DropdownMenuItem(
+                            text = { Text(mode.label, fontSize = 12.sp, maxLines = 1) },
+                            onClick = { vm.setTrackingMode(mode); filterMenu = false },
                         ) }
                     }
                 }
@@ -265,13 +278,13 @@ fun NetworkMapScreen(
 
         val status = when {
             state.loadingNodes -> "Loading repeater locations…"
-            session?.running == true -> "TRACKING · ${state.selectedKey.take(4).uppercase()} · ${session.filter.label}"
+            session?.running == true -> "TRACKING · ${state.selectedKey.take(4).uppercase()} · ${session.trackingMode.label}"
             else -> "STOPPED · ${state.selectedKey.take(4).uppercase()}"
         }
         Text(status, Modifier.padding(start = 14.dp, top = 8.dp), style = MaterialTheme.typography.labelMedium,
             color = if (session?.running == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            "Packets ${session?.events?.distinctBy { it.packetId }?.size ?: 0} · Routes ${session?.events?.size ?: 0} · Links ${state.edges.size} · MAX HOPS ${session?.events?.maxOfOrNull { it.path.size } ?: 0}",
+            "Packets ${session?.events?.distinctBy { it.packetId }?.size ?: 0} · Routes ${session?.events?.size ?: 0} · Links ${state.edges.size} · MAX HOPS ${session?.events?.maxOfOrNull { (it.path.size - 1).coerceAtLeast(0) } ?: 0}",
             Modifier.padding(start = 14.dp, bottom = 6.dp), style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -280,14 +293,21 @@ fun NetworkMapScreen(
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = {
                 vm.stop()
+                vm.markLongestRouteViewed()
                 val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 capturePermission.launch(manager.createScreenCaptureIntent())
             }, enabled = state.longestRoute.size > 1,
                 modifier = Modifier.height(30.dp), shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF2196F3)),
                 contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) {
-                Text("Longest route %.1f km".format(java.util.Locale.US, state.longestRouteKm),
-                    style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                val distance = "%.1f km".format(java.util.Locale.US, state.longestRouteKm)
+                Text(buildAnnotatedString {
+                    withStyle(SpanStyle(color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)) { append("Longest route ") }
+                    withStyle(SpanStyle(
+                        color = if (state.longestRouteIsNewRecord) MaterialTheme.colorScheme.error else Color(0xFF2196F3),
+                        fontWeight = FontWeight.Bold,
+                    )) { append(distance) }
+                }, style = MaterialTheme.typography.labelSmall)
             }
         }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 14.dp)) }
@@ -452,7 +472,11 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                 map.controller.animateTo(GeoPoint(selectedNode.lat, selectedNode.lon))
             }
             map.overlays.removeAll { it is Polyline || it is Marker }
-            edges.filterNot { it.longestRoute }.forEach { edge -> edgePolylines(edge).forEach(map.overlays::add) }
+            // Keep the complete network visible. The blue longest-route layer is
+            // an overlay and must never replace its underlying green segments.
+            edges.forEach { edge ->
+                edgePolylines(edge.copy(longestRoute = false)).forEach(map.overlays::add)
+            }
             if (longestRoute.size > 1) map.overlays += Polyline().apply {
                 setPoints(longestRoute.map { GeoPoint(it.lat, it.lon) })
                 outlinePaint.color = 0xFF2196F3.toInt(); outlinePaint.strokeWidth = 4.2f; outlinePaint.alpha = 255
@@ -587,12 +611,13 @@ private fun edgePolyline(edge: MapEdge) = Polyline().apply {
 
 private fun edgePolylines(edge: MapEdge): List<Polyline> {
     val core = edgePolyline(edge)
-    if (edge.uncertain || edge.longestRoute) return listOf(core)
+    if (edge.longestRoute) return listOf(core)
     val outline = Polyline().apply {
         setPoints(listOf(GeoPoint(edge.from.lat, edge.from.lon), GeoPoint(edge.to.lat, edge.to.lon)))
         outlinePaint.color = 0xD8191D1B.toInt()
         outlinePaint.strokeWidth = core.outlinePaint.strokeWidth + 4f
         outlinePaint.alpha = 220
+        if (edge.uncertain) outlinePaint.pathEffect = DashPathEffect(floatArrayOf(8f, 5f), 0f)
     }
     return listOf(outline, core)
 }

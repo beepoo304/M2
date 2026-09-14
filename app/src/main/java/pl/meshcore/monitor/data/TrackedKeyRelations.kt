@@ -2,7 +2,7 @@ package pl.meshcore.monitor.data
 
 enum class TrackedRelationType(val label: String) {
     SOURCE("SOURCE"),
-    DESTINATION("DESTINATION"),
+    ROUTE_ENDS_AT("ROUTE ENDS AT"),
     IN_ROUTE("IN ROUTE"),
     REPORTED_BY("REPORTED BY"),
 }
@@ -10,12 +10,14 @@ enum class TrackedRelationType(val label: String) {
 data class TrackedKeyRelations(
     val sourceKeys: Set<String> = emptySet(),
     val destinationKeys: Set<String> = emptySet(),
+    val routeEndKeys: Set<String> = emptySet(),
+    val replyKeys: Set<String> = emptySet(),
     val routeKeys: Set<String> = emptySet(),
     val observerKeys: Set<String> = emptySet(),
     val possibleKeys: Set<String> = emptySet(),
 ) {
     val confirmedKeys: Set<String>
-        get() = sourceKeys + destinationKeys + routeKeys + observerKeys
+        get() = sourceKeys + destinationKeys + routeEndKeys + replyKeys + routeKeys + observerKeys
 
     val hasConfirmed: Boolean
         get() = confirmedKeys.isNotEmpty()
@@ -23,6 +25,8 @@ data class TrackedKeyRelations(
     fun merge(other: TrackedKeyRelations): TrackedKeyRelations = TrackedKeyRelations(
         sourceKeys = sourceKeys + other.sourceKeys,
         destinationKeys = destinationKeys + other.destinationKeys,
+        routeEndKeys = routeEndKeys + other.routeEndKeys,
+        replyKeys = replyKeys + other.replyKeys,
         routeKeys = routeKeys + other.routeKeys,
         observerKeys = observerKeys + other.observerKeys,
         possibleKeys = (possibleKeys + other.possibleKeys) - (confirmedKeys + other.confirmedKeys),
@@ -30,7 +34,8 @@ data class TrackedKeyRelations(
 
     fun labels(): List<String> = buildList {
         sourceKeys.sorted().forEach { add("${TrackedRelationType.SOURCE.label} · ${it.take(4).uppercase()}") }
-        destinationKeys.sorted().forEach { add("${TrackedRelationType.DESTINATION.label} · ${it.take(4).uppercase()}") }
+        routeEndKeys.sorted().forEach { add("${TrackedRelationType.ROUTE_ENDS_AT.label} · ${it.take(4).uppercase()}") }
+        replyKeys.sorted().forEach { add("REPLY TO · ${it.take(4).uppercase()}") }
         routeKeys.sorted().forEach { add("${TrackedRelationType.IN_ROUTE.label} · ${it.take(4).uppercase()}") }
         observerKeys.sorted().forEach { add("${TrackedRelationType.REPORTED_BY.label} · ${it.take(4).uppercase()}") }
     }
@@ -56,7 +61,8 @@ object TrackedKeyMatcher {
     }
 
     fun resolvedRoute(path: List<String>, resolvedPath: List<String>, savedKeys: Set<String>): TrackedKeyRelations {
-        val confirmed = mutableSetOf<String>()
+        val inRoute = mutableSetOf<String>()
+        val routeEnds = mutableSetOf<String>()
         val possible = mutableSetOf<String>()
         path.forEachIndexed { index, hop ->
             if (hop.length < 4) return@forEachIndexed
@@ -64,12 +70,11 @@ object TrackedKeyMatcher {
             val fullMatch = exactFull(resolved, savedKeys)
             // A resolver can suggest a full key for a 1-byte path entry, but the
             // packet itself still does not contain enough bytes to confirm it.
-            if (hop.length >= 4 && fullMatch.isNotEmpty()) confirmed += fullMatch
-            else {
-                confirmed += reliableHash(hop, savedKeys)
-            }
+            val matches = fullMatch.ifEmpty { reliableHash(hop, savedKeys) }
+            if (index == path.lastIndex) routeEnds += matches else inRoute += matches
         }
-        return TrackedKeyRelations(routeKeys = confirmed, possibleKeys = possible - confirmed)
+        return TrackedKeyRelations(routeKeys = inRoute, routeEndKeys = routeEnds,
+            possibleKeys = possible - inRoute - routeEnds)
     }
 
     fun observer(observerKey: String?, savedKeys: Set<String>): TrackedKeyRelations =

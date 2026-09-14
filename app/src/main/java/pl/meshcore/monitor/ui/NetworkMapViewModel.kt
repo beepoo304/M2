@@ -61,7 +61,8 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
         if (_state.value.selectedKey == key) return
         val initialSelection = _state.value.selectedKey.isBlank()
         if (!initialSelection) _state.value.session?.takeIf { it.running }?.let { save(it.copy(running = false)) }
-        val loaded = load(key)
+        val loaded = load(key).withoutInferredLastHops()
+        save(loaded)
         val restored = if (initialSelection) loaded else loaded.copy(running = false)
         prefs.edit().putString(LAST_SELECTED_KEY, key).apply()
         _state.value = _state.value.copy(selectedKey = key, selectedName = name, session = restored, error = null)
@@ -111,7 +112,7 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
 
     fun importMap(raw: String) {
         val imported = MapFileStore.decode(raw)
-        val session = imported.session.copy(running = false)
+        val session = imported.session.copy(running = false).withoutInferredLastHops()
         save(session)
         processedCounts.clear(); baselineCounts = emptyMap()
         _state.value = _state.value.copy(selectedKey = session.key, selectedName = imported.name,
@@ -131,9 +132,9 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
         return when (mode) {
             MapTrackingMode.STARTS_AT_KEY -> match.starts
             MapTrackingMode.ENDS_AT_KEY -> match.ends
-            MapTrackingMode.RELATED_TO_KEY -> match.starts || match.ends || match.inRoute
+            MapTrackingMode.RELATED_TO_KEY -> match.starts || match.ends || match.inRoute || match.reply
             MapTrackingMode.REPORTED_BY_KEY -> match.reported
-            MapTrackingMode.ALL_FOR_SELECTED_KEY -> match.starts || match.ends || match.inRoute || match.reported
+            MapTrackingMode.ALL_FOR_SELECTED_KEY -> match.starts || match.ends || match.inRoute || match.reported || match.reply
         }
     }
 
@@ -151,14 +152,17 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
         val usableName = name.isNotBlank() && !name.startsWith("Looking up", true)
         val namedSource = usableName && (decoded?.optString("sender").equals(name, true) ||
             decoded?.optString("name").equals(name, true))
-        val namedDestination = usableName && TrackedMention.contains(decoded?.optString("text").orEmpty(), setOf(name.lowercase()))
+        val namedReply = usableName && TrackedMention.contains(decoded?.optString("text").orEmpty(), setOf(name.lowercase()))
         val physicalStart = exactSourceHash || uncertainSource ||
             relations.sourceKeys.any { it.equals(selected, true) } && !namedSource
         val physicalEnd = exactDestinationHash || uncertainDestination ||
-            relations.destinationKeys.any { it.equals(selected, true) } && !namedDestination
+            relations.destinationKeys.any { it.equals(selected, true) } ||
+            relations.routeEndKeys.any { it.equals(selected, true) }
         return SelectedPacketMatch(
             starts = relations.sourceKeys.any { it.equals(selected, true) } || exactSourceHash || uncertainSource || namedSource,
-            ends = relations.destinationKeys.any { it.equals(selected, true) } || exactDestinationHash || uncertainDestination || namedDestination,
+            ends = relations.destinationKeys.any { it.equals(selected, true) } ||
+                relations.routeEndKeys.any { it.equals(selected, true) } || exactDestinationHash || uncertainDestination,
+            reply = relations.replyKeys.any { it.equals(selected, true) } || namedReply,
             inRoute = relations.routeKeys.any { it.equals(selected, true) },
             reported = relations.observerKeys.any { it.equals(selected, true) },
             uncertainStart = uncertainSource,
@@ -168,7 +172,7 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
             physicalStart = physicalStart,
             physicalEnd = physicalEnd,
             logicalStartOnly = namedSource && !physicalStart,
-            logicalEndOnly = namedDestination && !physicalEnd,
+            logicalEndOnly = false,
         )
     }
 
@@ -182,25 +186,26 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
             }
             val current = _state.value; val session = current.session ?: return@launch
             if (!session.running || session.key != current.selectedKey) return@launch
-            val existing = session.events.mapTo(mutableSetOf()) { "${it.packetId}:${it.path.joinToString()}" }
+            val retainedEvents = session.events.filterNot { it.inferredLastHop }
+            val existing = retainedEvents.mapTo(mutableSetOf()) { "${it.packetId}:${it.path.joinToString()}" }
             val packetMatch = selectedPacketMatch(packet, current)
+            val selectedHash = current.selectedKey.take(4).uppercase()
             val additions = details.routes.mapNotNull { route ->
                 if (route.path.any { it.length < 4 }) return@mapNotNull null
                 val selectedKey = current.selectedKey
-                val selectedHash = selectedKey.take(4).uppercase()
                 val routeRelations = TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, setOf(selectedKey))
                 val routeMatch = routeRelations.routeKeys.any { it.equals(selectedKey, true) }
+                val routeEndMatch = routeRelations.routeEndKeys.any { it.equals(selectedKey, true) }
                 val observerMatch = TrackedKeyMatcher.observer(route.observerPublicKey, setOf(selectedKey)).observerKeys.isNotEmpty()
                 val sourceMatch = packetMatch.starts
-                val destinationMatch = packetMatch.ends
+                val destinationMatch = routeEndMatch || packetMatch.ends
+                val replyMatch = packetMatch.reply
                 val accepted = when (session.trackingMode) {
                     MapTrackingMode.STARTS_AT_KEY -> sourceMatch
                     MapTrackingMode.ENDS_AT_KEY -> destinationMatch && !packetMatch.logicalEndOnly
-                    MapTrackingMode.RELATED_TO_KEY -> sourceMatch ||
-                        destinationMatch && !packetMatch.logicalEndOnly || routeMatch
+                    MapTrackingMode.RELATED_TO_KEY -> sourceMatch || destinationMatch || routeMatch || replyMatch
                     MapTrackingMode.REPORTED_BY_KEY -> observerMatch
-                    MapTrackingMode.ALL_FOR_SELECTED_KEY -> sourceMatch ||
-                        destinationMatch && !packetMatch.logicalEndOnly || routeMatch || observerMatch
+                    MapTrackingMode.ALL_FOR_SELECTED_KEY -> sourceMatch || destinationMatch || routeMatch || observerMatch || replyMatch
                 }
                 if (!accepted) return@mapNotNull null
                 val longestEligible = when (session.trackingMode) {
@@ -209,7 +214,7 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
                     MapTrackingMode.RELATED_TO_KEY -> sourceMatch ||
                         destinationMatch && !packetMatch.logicalEndOnly || routeMatch
                     MapTrackingMode.REPORTED_BY_KEY -> observerMatch
-                    MapTrackingMode.ALL_FOR_SELECTED_KEY -> sourceMatch || destinationMatch && !packetMatch.logicalEndOnly || routeMatch || observerMatch
+                    MapTrackingMode.ALL_FOR_SELECTED_KEY -> sourceMatch || destinationMatch || routeMatch || observerMatch
                 }
                 val directEmptyPath = packet.payloadType in 0..2 && route.path.isEmpty()
                 var path = when {
@@ -223,12 +228,12 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
                 // A decoded channel sender name is tied to a saved key. Include
                 // that source before the API's first recorded repeater.
                 val exactKeySource = packet.trackedRelations.sourceKeys.any { it.equals(selectedKey, true) }
-                if (exactKeySource && !path.firstOrNull().equals(selectedHash, true)) path = listOf(selectedHash) + path
+                if (!replyMatch && exactKeySource && !path.firstOrNull().equals(selectedHash, true)) path = listOf(selectedHash) + path
                 if (packetMatch.uncertainStartHash.isNotBlank() &&
                     !path.firstOrNull().equals(packetMatch.uncertainStartHash, true)) {
                     path = listOf(packetMatch.uncertainStartHash) + path
                 }
-                if (packetMatch.physicalEnd || observerMatch) {
+                if (!replyMatch && (observerMatch || (packetMatch.physicalEnd && routeEndMatch))) {
                     path = when {
                         path.lastOrNull().equals(selectedHash, true) -> path
                         observerMatch && path.lastOrNull()?.length == 2 && selectedHash.startsWith(path.last(), true) ->
@@ -249,11 +254,12 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
                 else MapRouteEvent(packet.id, packet.hash, packet.payloadType, packet.timestamp,
                     System.currentTimeMillis(), path,
                     uncertainAttribution = path.any { it.length == 2 } || packetMatch.uncertainStart || packetMatch.uncertainEnd,
-                    longestRouteEligible = longestEligible,
-                    logicalDestinationUnavailable = packetMatch.logicalEndOnly)
+                    longestRouteEligible = longestEligible && !replyMatch,
+                    logicalDestinationUnavailable = false,
+                    replyToSelected = replyMatch)
             }.distinctBy { "${it.packetId}:${it.path.joinToString()}" }
-            if (additions.isNotEmpty()) {
-                val updated = session.copy(events = (session.events + additions).takeLast(5000))
+            if (additions.isNotEmpty() || retainedEvents.size != session.events.size) {
+                val updated = session.copy(events = (retainedEvents + additions).takeLast(5000))
                 save(updated); _state.value = current.copy(session = updated); rebuild()
             }
         }
@@ -264,6 +270,7 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
         // They have no proven RF endpoint and must not be rendered or measured.
         val events = _state.value.session?.events.orEmpty()
             .filterNot { it.logicalDestinationUnavailable }
+            .filterNot { it.inferredLastHop }
             .filter { event -> event.path.all { it.length >= 4 } }
         val selectedHash = _state.value.selectedKey.take(4)
         val selected = (locatedNodes.firstOrNull { it.publicKey.equals(_state.value.selectedKey, true) }
@@ -285,7 +292,7 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
         }
         val edges = MapRouteMapper.edges(routedEvents, locatedNodes).map { edge ->
             val segment = listOf("${edge.from.lat}:${edge.from.lon}", "${edge.to.lat}:${edge.to.lon}").sorted().joinToString("|")
-            edge.copy(longestRoute = segment in longestSegments)
+            edge.copy(longestRoute = !edge.reply && segment in longestSegments)
         }
         val nodes = (edges.flatMap { listOf(it.from, it.to) } + listOfNotNull(selected))
             .distinctBy { "${it.hash}:${it.lat}:${it.lon}" }
@@ -350,6 +357,9 @@ class NetworkMapViewModel(application: Application) : AndroidViewModel(applicati
     private fun load(key: String): MapSession = MapSessionJson.decode(prefs.getString(prefKey(key), "").orEmpty(), key)
     private fun save(session: MapSession) { prefs.edit().putString(prefKey(session.key), MapSessionJson.encode(session)).apply() }
 
+    private fun MapSession.withoutInferredLastHops(): MapSession =
+        copy(events = events.filterNot { it.inferredLastHop })
+
     private companion object {
         const val LAST_SELECTED_KEY = "last_selected_key"
         const val LONGEST_ROUTE_RECORDS = "longest_route_records"
@@ -369,6 +379,7 @@ private data class SelectedPacketMatch(
     val ends: Boolean = false,
     val inRoute: Boolean = false,
     val reported: Boolean = false,
+    val reply: Boolean = false,
     val uncertainStart: Boolean = false,
     val uncertainEnd: Boolean = false,
     val uncertainStartHash: String = "",

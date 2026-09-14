@@ -29,6 +29,23 @@ class OwnTrafficClassifierTest {
     }
 
     @Test
+    fun distinguishesIntermediateAndFinalHopFromReporter() {
+        val intermediate = TrackedKeyMatcher.resolvedRoute(
+            listOf("AAEF", "F480", "86E7"), emptyList(), setOf(ownKey))
+        assertEquals(setOf(ownKey), intermediate.routeKeys)
+        assertTrue(intermediate.routeEndKeys.isEmpty())
+
+        val final = TrackedKeyMatcher.resolvedRoute(
+            listOf("AAEF", "F480"), emptyList(), setOf(ownKey))
+        assertTrue(final.routeKeys.isEmpty())
+        assertEquals(setOf(ownKey), final.routeEndKeys)
+        assertEquals(listOf("ROUTE ENDS AT · F480"), final.labels())
+
+        val reported = final.merge(TrackedKeyMatcher.observer(ownKey, setOf(ownKey)))
+        assertEquals(listOf("ROUTE ENDS AT · F480", "REPORTED BY · F480"), reported.labels())
+    }
+
+    @Test
     fun ignoresPacketWithoutOwnObservation() {
         val details = PacketObservationDetails(
             routes = listOf(

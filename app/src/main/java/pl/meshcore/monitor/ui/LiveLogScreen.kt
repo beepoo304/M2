@@ -53,6 +53,7 @@ import org.json.JSONObject
         PullToRefreshBox(refreshing, vm::refresh, Modifier.fillMaxSize()) {
             LazyColumn(Modifier.fillMaxSize(), state = listState) { items(state.packets, key = { it.id }) { packet ->
                 val color = when {
+                    packet.trackedRelations.replyKeys.isNotEmpty() -> Color(0xFFF0A84B)
                     packet.ownTraffic -> MaterialTheme.colorScheme.primary
                     packet.possibleOwnTraffic -> Color(0xFFF0A84B)
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -63,7 +64,7 @@ import org.json.JSONObject
                     TrackedNameText(packet.detail, config.ownNodeNames, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp))
                     val matches = packet.trackedRelations.labels()
                     if (matches.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        matches.forEach { match -> Text(match, color = MaterialTheme.colorScheme.primary,
+                        matches.forEach { match -> Text(match, color = if (match.startsWith("REPLY TO")) Color(0xFFF0A84B) else MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp)) }
                     }
                     if (packet.trackedRelations.possibleKeys.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -104,7 +105,7 @@ import org.json.JSONObject
             if (packetMatchLabels.isNotEmpty()) item {
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text("Tracked key matches", fontWeight = FontWeight.Medium)
-                    packetMatchLabels.forEach { label -> Text(label, color = MaterialTheme.colorScheme.primary,
+                    packetMatchLabels.forEach { label -> Text(label, color = if (label.startsWith("REPLY TO")) Color(0xFFF0A84B) else MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall) }
                 }
             }

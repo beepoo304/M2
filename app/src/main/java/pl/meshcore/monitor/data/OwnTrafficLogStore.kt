@@ -45,6 +45,7 @@ class OwnTrafficLogStore(context: Context) {
                     trackedRelations = TrackedKeyRelations(
                         sourceKeys = item.stringSet("sourceKeys"),
                         destinationKeys = item.stringSet("destinationKeys"),
+                        routeEndKeys = item.stringSet("routeEndKeys"),
                         routeKeys = item.stringSet("routeKeys"),
                         observerKeys = item.stringSet("observerKeys"),
                         possibleKeys = item.stringSet("possibleKeys"),
@@ -68,6 +69,7 @@ class OwnTrafficLogStore(context: Context) {
                 put("matchedOwnKeys", JSONArray(packet.matchedOwnKeys.toList()))
                 put("sourceKeys", JSONArray(packet.trackedRelations.sourceKeys.toList()))
                 put("destinationKeys", JSONArray(packet.trackedRelations.destinationKeys.toList()))
+                put("routeEndKeys", JSONArray(packet.trackedRelations.routeEndKeys.toList()))
                 put("routeKeys", JSONArray(packet.trackedRelations.routeKeys.toList()))
                 put("observerKeys", JSONArray(packet.trackedRelations.observerKeys.toList()))
                 put("possibleKeys", JSONArray(packet.trackedRelations.possibleKeys.toList()))

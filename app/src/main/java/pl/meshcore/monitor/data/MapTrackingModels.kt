@@ -39,6 +39,7 @@ data class MapEdge(
     val uncertain: Boolean,
     val count: Int = 1,
     val longestRoute: Boolean = false,
+    val reply: Boolean = false,
 )
 
 data class MapRouteEvent(
@@ -51,6 +52,8 @@ data class MapRouteEvent(
     val uncertainAttribution: Boolean = false,
     val longestRouteEligible: Boolean = true,
     val logicalDestinationUnavailable: Boolean = false,
+    val replyToSelected: Boolean = false,
+    val inferredLastHop: Boolean = false,
 )
 
 data class MapSession(
@@ -74,6 +77,8 @@ internal object MapSessionJson {
             put("uncertainAttribution", event.uncertainAttribution)
             put("longestRouteEligible", event.longestRouteEligible)
             put("logicalDestinationUnavailable", event.logicalDestinationUnavailable)
+            put("replyToSelected", event.replyToSelected)
+            put("inferredLastHop", event.inferredLastHop)
         }) } })
     }.toString()
 
@@ -94,7 +99,8 @@ internal object MapSessionJson {
                 add(MapRouteEvent(event.optString("packetId"), event.optString("packetHash"),
                     event.optInt("payloadType"), event.optString("timestamp"), event.optLong("observedAt"),
                     eventPath, event.optBoolean("uncertainAttribution"), eligible,
-                    event.optBoolean("logicalDestinationUnavailable")))
+                    event.optBoolean("logicalDestinationUnavailable"),
+                    event.optBoolean("replyToSelected"), event.optBoolean("inferredLastHop")))
             } },
         )
     }.getOrDefault(MapSession(fallbackKey))

@@ -42,4 +42,28 @@ class MapRouteMapperTest {
 
         assertTrue(MapRouteMapper.metrics(listOf(uncertain), nodes).longestRoute.isEmpty())
     }
+
+    @Test fun replyUsesOrangeEdgesButNeverDrawsInferredHopOrSetsLongestRoute() {
+        val reply = MapRouteEvent("reply", "hash", 5, "", 1,
+            listOf("0652", "B282"), replyToSelected = true, longestRouteEligible = false)
+        val inferred = MapRouteEvent("reply", "hash", 5, "", 1,
+            listOf("B282", "F480"), replyToSelected = true, inferredLastHop = true,
+            longestRouteEligible = false)
+
+        val edges = MapRouteMapper.edges(listOf(reply, inferred), nodes)
+        val metrics = MapRouteMapper.metrics(listOf(reply, inferred), nodes)
+
+        assertEquals(1, edges.size)
+        assertTrue(edges.all { it.reply })
+        assertEquals(MapRouteMapper.distanceKm(50.20, 19.00, 50.25, 19.05), metrics.totalUniqueKm, 0.001)
+        assertTrue(metrics.longestRoute.isEmpty())
+    }
+
+    @Test fun replyDoesNotBridgeRepeaterWithoutGps() {
+        val reply = MapRouteEvent("reply", "hash", 5, "", 1,
+            listOf("0652", "B282", "F480"), replyToSelected = true)
+        val nodesWithoutMiddleRepeater = nodes.filterNot { it.publicKey.startsWith("B282") }
+
+        assertTrue(MapRouteMapper.edges(listOf(reply), nodesWithoutMiddleRepeater).isEmpty())
+    }
 }

@@ -70,7 +70,8 @@ private fun LivePacket.epochMillis(): Long = runCatching { Instant.parse(timesta
 
 private fun LivePacket.belongsInMyLog(trackedNames: Set<String>): Boolean {
     val relations = trackedRelations
-    if (relations.sourceKeys.isNotEmpty() || relations.destinationKeys.isNotEmpty() || relations.routeKeys.isNotEmpty()) return true
+    if (relations.sourceKeys.isNotEmpty() || relations.destinationKeys.isNotEmpty() ||
+        relations.routeEndKeys.isNotEmpty() || relations.routeKeys.isNotEmpty()) return true
     if (possibleOwnTraffic) return false
     val decoded = decodedJson.takeIf { it.startsWith("{") }
         ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return false

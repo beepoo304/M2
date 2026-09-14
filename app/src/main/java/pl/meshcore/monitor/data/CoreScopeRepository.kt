@@ -181,7 +181,10 @@ class CoreScopeRepository(
         return coroutineScope {
             packets.map { packet ->
                 async {
-                    if (packet.observationCount <= 1) return@async packet
+                    // A single-observation reply already has a tracked key from
+                    // its text. Fetch its route now instead of waiting for a
+                    // second observer or for the user to open the details.
+                    if (packet.observationCount <= 1 && !packet.trackedRelations.hasConfirmed) return@async packet
 
                     val cached = observationMatchCache[packet.id]
                     val cacheIsFresh = cached != null &&
@@ -192,6 +195,7 @@ class CoreScopeRepository(
                     } else {
                         semaphore.withPermit {
                             val details = PacketObservationRepository.load(packet.id)
+                            if (!details.loadSucceeded) return@withPermit OwnTrafficMatch(TrackedKeyRelations())
                             val routeMatch = OwnTrafficClassifier.classify(details, ownPublicKeys)
                             val namedMatch = if (details.routes.any { route ->
                                     route.path.isEmpty() || route.path.all { it.length >= 4 }
@@ -224,7 +228,7 @@ class CoreScopeRepository(
         val text = decoded.optString("text")
         return TrackedKeyRelations(
             sourceKeys = ownKeyNames.filterValues { it == sender || it == nodeName }.keys,
-            destinationKeys = ownKeyNames.filterValues { TrackedMention.contains(text, setOf(it)) }.keys,
+            replyKeys = ownKeyNames.filterValues { TrackedMention.contains(text, setOf(it)) }.keys,
         )
     }
 
@@ -270,7 +274,8 @@ class CoreScopeRepository(
                 .merge(TrackedKeyMatcher.observer(json.optString("observer_id"), ownPublicKeys))
                 .merge(TrackedKeyRelations(
                     sourceKeys = decodedSource + decodedSourceHash + namedSources,
-                    destinationKeys = decodedDestination + namedDestinations,
+                    destinationKeys = decodedDestination,
+                    replyKeys = namedDestinations,
                 ))
         } else TrackedKeyRelations()
         return LivePacket(

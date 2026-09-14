@@ -10,6 +10,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
 import android.graphics.PointF
+import android.graphics.Point
 import android.graphics.drawable.BitmapDrawable
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -62,6 +63,7 @@ import org.osmdroid.util.BoundingBox
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
+import org.osmdroid.views.overlay.Overlay
 import pl.meshcore.monitor.data.MapEdge
 import pl.meshcore.monitor.data.MapTrackingMode
 import pl.meshcore.monitor.data.MapFileStore
@@ -300,7 +302,7 @@ fun NetworkMapScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("MAX HOPS ${session?.events?.maxOfOrNull { (it.path.size - 1).coerceAtLeast(0) } ?: 0}",
+            Text("MAX HOPS ${session?.events?.filterNot { it.inferredLastHop }?.maxOfOrNull { (it.path.size - 1).coerceAtLeast(0) } ?: 0}",
                 maxLines = 1, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = {
@@ -383,10 +385,12 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
         var completed = false
         try {
         val nodeMarkers = map.overlays.filterIsInstance<Marker>()
-        map.overlays.removeAll { it is Polyline || it is Marker }
+        map.overlays.removeAll { it is Polyline || it is Marker || it is AlternatingReplyOverlay }
         // Keep the complete green network visible for the whole flight. The blue
         // route is progressively painted over it and must never create a gap.
-        edges.forEach { edgePolylines(it.copy(longestRoute = false)).forEach(map.overlays::add) }
+        val sharedSegments = overlappingReplySegments(edges, longestRoute)
+        edges.sortedBy { it.reply }.filterNot { it.reply && it.matchesAny(sharedSegments) }
+            .forEach { edgePolylines(it.copy(longestRoute = false)).forEach(map.overlays::add) }
         val flightLine = Polyline().apply {
             outlinePaint.color = 0xFF2196F3.toInt(); outlinePaint.strokeWidth = 16.875f; outlinePaint.alpha = 255
         }
@@ -395,6 +399,10 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
             MapRouteMapper.distanceKm(a.lat, a.lon, b.lat, b.lon)
         }
         map.overlays += flightLine
+        val replyFlightOverlay = AlternatingReplyOverlay(longestRoute, sharedSegments, 16.875f).apply {
+            visibleSegment = -1
+        }
+        map.overlays += replyFlightOverlay
         // Node dots must stay above every route line during the complete flight.
         nodeMarkers.forEach(map.overlays::add)
         flightLine.setPoints(revealed)
@@ -424,6 +432,8 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                 map.mapOrientation = 0f
                 compassBearing = ((bearing + 360f) % 360f)
                 flightLine.setPoints(revealed + GeoPoint(lat, lon))
+                replyFlightOverlay.visibleSegment = index - 1
+                replyFlightOverlay.progress = t
                 if (!targetLabelShown && raw >= .80) {
                     val label = if (index == longestRoute.lastIndex) "FINISH → HOP $index · ${to.hash}" else "HOP $index · ${to.hash}"
                     addFlightLabel(map, to, label)
@@ -436,6 +446,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
             }
             revealed += GeoPoint(to.lat, to.lon)
             flightLine.setPoints(revealed)
+            replyFlightOverlay.progress = 1.0
             animationStep = index
             if (!targetLabelShown) {
                 val label = if (index == longestRoute.lastIndex) "FINISH → HOP $index · ${to.hash}" else "HOP $index · ${to.hash}"
@@ -483,16 +494,18 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                 map.controller.setZoom(12.0)
                 map.controller.animateTo(GeoPoint(selectedNode.lat, selectedNode.lon))
             }
-            map.overlays.removeAll { it is Polyline || it is Marker }
+            map.overlays.removeAll { it is Polyline || it is Marker || it is AlternatingReplyOverlay }
             // Keep the complete network visible. The blue longest-route layer is
             // an overlay and must never replace its underlying green segments.
-            edges.forEach { edge ->
+            val sharedSegments = overlappingReplySegments(edges, longestRoute)
+            edges.sortedBy { it.reply }.filterNot { it.reply && it.matchesAny(sharedSegments) }.forEach { edge ->
                 edgePolylines(edge.copy(longestRoute = false)).forEach(map.overlays::add)
             }
             if (longestRoute.size > 1) map.overlays += Polyline().apply {
                 setPoints(longestRoute.map { GeoPoint(it.lat, it.lon) })
                 outlinePaint.color = 0xFF2196F3.toInt(); outlinePaint.strokeWidth = 4.2f; outlinePaint.alpha = 255
             }
+            map.overlays += AlternatingReplyOverlay(longestRoute, sharedSegments, 4.2f)
             (edges.flatMap { listOf(it.from, it.to) } + listOfNotNull(selectedNode))
                 .distinctBy { "${it.hash}:${it.lat}:${it.lon}" }
                 .forEach { point ->
@@ -608,16 +621,72 @@ private fun addFlightLabel(map: MapView, point: MapNodePoint, label: String, com
     }
 }
 
+private fun overlappingReplySegments(edges: List<MapEdge>, longestRoute: List<MapNodePoint>):
+    List<Pair<MapNodePoint, MapNodePoint>> {
+    val replySegments = edges.asSequence().filter { it.reply }
+        .map { segmentKey(it.from, it.to) }.toSet()
+    return longestRoute.zipWithNext().filter { (from, to) -> segmentKey(from, to) in replySegments }
+}
+
+private fun segmentKey(a: MapNodePoint, b: MapNodePoint) = listOf(
+    "${a.lat}:${a.lon}", "${b.lat}:${b.lon}",
+).sorted().joinToString("|")
+
+private fun MapEdge.matchesAny(segments: List<Pair<MapNodePoint, MapNodePoint>>): Boolean {
+    val key = segmentKey(from, to)
+    return segments.any { (a, b) -> segmentKey(a, b) == key }
+}
+
+private class AlternatingReplyOverlay(
+    private val route: List<MapNodePoint>,
+    sharedSegments: List<Pair<MapNodePoint, MapNodePoint>>,
+    strokeWidth: Float,
+) : Overlay() {
+    private val shared = sharedSegments.map { (a, b) -> segmentKey(a, b) }.toSet()
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFF0A84B.toInt()
+        this.strokeWidth = strokeWidth
+        strokeCap = Paint.Cap.BUTT
+    }
+    var visibleSegment: Int = Int.MAX_VALUE
+    var progress: Double = 1.0
+
+    override fun draw(canvas: AndroidCanvas, mapView: MapView, shadow: Boolean) {
+        if (shadow) return
+        route.zipWithNext().forEachIndexed { index, (from, to) ->
+            if (index > visibleSegment || segmentKey(from, to) !in shared) return@forEachIndexed
+            val start = mapView.projection.toPixels(GeoPoint(from.lat, from.lon), Point())
+            val end = mapView.projection.toPixels(GeoPoint(to.lat, to.lon), Point())
+            val fullLength = hypot((end.x - start.x).toFloat(), (end.y - start.y).toFloat())
+            if (fullLength < 1f) return@forEachIndexed
+            val visibleLength = fullLength * if (index == visibleSegment) progress.toFloat().coerceIn(0f, 1f) else 1f
+            var position = 0f
+            // Long, separate orange pieces alternate with the blue base line.
+            val pieceLength = 88f
+            while (position < visibleLength) {
+                val finish = minOf(position + pieceLength, visibleLength)
+                val x1 = start.x + (end.x - start.x) * position / fullLength
+                val y1 = start.y + (end.y - start.y) * position / fullLength
+                val x2 = start.x + (end.x - start.x) * finish / fullLength
+                val y2 = start.y + (end.y - start.y) * finish / fullLength
+                canvas.drawLine(x1, y1, x2, y2, paint)
+                position += pieceLength * 2f
+            }
+        }
+    }
+}
+
 private fun edgePolyline(edge: MapEdge) = Polyline().apply {
     setPoints(listOf(GeoPoint(edge.from.lat, edge.from.lon), GeoPoint(edge.to.lat, edge.to.lon)))
     outlinePaint.color = when {
         edge.longestRoute -> 0xFF2196F3.toInt()
+        edge.reply -> 0xFFF0A84B.toInt()
         edge.uncertain -> 0xFFF0A84B.toInt()
         else -> 0xFF42D47B.toInt()
     }
     val baseWidth = 2.6f + minOf(edge.count, 8) * .22f
-    outlinePaint.strokeWidth = if (!edge.uncertain && !edge.longestRoute) baseWidth * 1.4f else baseWidth
-    outlinePaint.alpha = if (!edge.uncertain && !edge.longestRoute) 255 else minOf(175 + edge.count * 8, 255)
+    outlinePaint.strokeWidth = if (!edge.uncertain && !edge.longestRoute || edge.reply) baseWidth * 1.4f else baseWidth
+    outlinePaint.alpha = if (!edge.uncertain && !edge.longestRoute || edge.reply) 255 else minOf(175 + edge.count * 8, 255)
     if (edge.uncertain && !edge.longestRoute) outlinePaint.pathEffect = DashPathEffect(floatArrayOf(8f, 5f), 0f)
 }
 

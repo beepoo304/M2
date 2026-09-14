@@ -8,9 +8,13 @@ object MapRouteMapper {
 
     fun metrics(events: List<MapRouteEvent>, nodes: List<LocatedNode>): Metrics {
         val unique = edges(events, nodes)
-        val total = unique.sumOf { distanceKm(it.from.lat, it.from.lon, it.to.lat, it.to.lon) }
+        val total = unique.distinctBy { edge -> listOf(
+                "${edge.from.hash}:${edge.from.lat}:${edge.from.lon}",
+                "${edge.to.hash}:${edge.to.lat}:${edge.to.lon}",
+            ).sorted().joinToString("|") }
+            .sumOf { distanceKm(it.from.lat, it.from.lon, it.to.lat, it.to.lon) }
         val routes = events.filter { event ->
-            event.longestRouteEligible && !event.uncertainAttribution && event.path.all { it.length >= 4 }
+            event.longestRouteEligible && !event.replyToSelected && !event.uncertainAttribution && event.path.all { it.length >= 4 }
         }.map { withoutLoops(resolve(it.path, nodes)) }
             .filter { route -> route.size > 1 && route.none { it.uncertain } }
         val longestRoute = routes.maxByOrNull { route -> route.zipWithNext().sumOf { (a, b) ->
@@ -21,15 +25,18 @@ object MapRouteMapper {
     }
     fun edges(events: List<MapRouteEvent>, nodes: List<LocatedNode>): List<MapEdge> {
         val aggregated = linkedMapOf<String, MapEdge>()
-        events.filter { event -> event.path.all { it.length >= 4 } }.forEach { event ->
-            val points = resolve(event.path, nodes)
-            points.zipWithNext().forEach { (from, to) ->
+        events.filter { event -> !event.inferredLastHop && event.path.all { it.length >= 4 } }.forEach { event ->
+            val segments = if (event.replyToSelected) confirmedReplySegments(event.path, nodes)
+                else resolve(event.path, nodes).zipWithNext()
+            segments.forEach { (from, to) ->
                 val uncertain = from.uncertain || to.uncertain || event.path.firstOrNull()?.length == 2 || event.uncertainAttribution
                 val a = "${from.hash}:${from.lat}:${from.lon}"
                 val b = "${to.hash}:${to.lat}:${to.lon}"
-                val id = if (a <= b) "$a|$b" else "$b|$a"
+                val link = if (a <= b) "$a|$b" else "$b|$a"
+                val id = if (event.replyToSelected) "reply:$link" else link
                 val existing = aggregated[id]
-                aggregated[id] = if (existing == null) MapEdge(from, to, uncertain)
+                aggregated[id] = if (existing == null) MapEdge(from, to, uncertain,
+                    reply = event.replyToSelected)
                     else existing.copy(
                         from = mergePointCertainty(existing.from, from),
                         to = mergePointCertainty(existing.to, to),
@@ -40,6 +47,17 @@ object MapRouteMapper {
         }
         return aggregated.values.toList()
     }
+
+    private fun confirmedReplySegments(path: List<String>, nodes: List<LocatedNode>): List<Pair<MapNodePoint, MapNodePoint>> =
+        path.zipWithNext().mapNotNull { (fromHash, toHash) ->
+            val fromNodes = nodes.filter { it.publicKey.startsWith(fromHash, true) }
+            val toNodes = nodes.filter { it.publicKey.startsWith(toHash, true) }
+            val pair = fromNodes.asSequence().flatMap { from -> toNodes.asSequence().map { to -> from to to } }
+                .minByOrNull { (from, to) -> distanceKm(from.lat, from.lon, to.lat, to.lon) }
+                ?: return@mapNotNull null
+            MapNodePoint(pair.first.publicKey.take(4), pair.first.lat, pair.first.lon, sourceHash = fromHash) to
+                MapNodePoint(pair.second.publicKey.take(4), pair.second.lat, pair.second.lon, sourceHash = toHash)
+        }
 
     private fun mergePointCertainty(first: MapNodePoint, next: MapNodePoint): MapNodePoint =
         if (!first.uncertain || next.uncertain) first else next

@@ -6,10 +6,21 @@ import java.util.Date
 import java.util.Locale
 
 object OwnLogTextExporter {
-    fun save(context: Context, packets: List<LivePacket>): String {
+    suspend fun save(context: Context, packets: List<LivePacket>): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val fileName = "M2_MY_LOG_$stamp.txt"
-        ExportLocationStore.write(context, fileName, "text/plain", format(packets))
+        ExportLocationStore.write(context, fileName, "text/plain", format(packets) + buildString {
+            packets.forEach { packet ->
+                val details = PacketObservationRepository.load(packet.id)
+                appendLine("\nALL OBSERVATIONS: ${packet.hash} / ${packet.id}")
+                if (!details.loadSucceeded) appendLine("UNAVAILABLE: observation API")
+                details.routes.forEach { route ->
+                    appendLine("Path: ${route.path.joinToString(" -> ")}")
+                    appendLine("Resolved: ${route.resolvedPath.joinToString(" -> ")}")
+                    appendLine("Observer: ${route.observerPublicKey} / ${route.observerName}; RSSI ${route.rssi}; SNR ${route.snr}")
+                }
+            }
+        })
         return fileName
     }
 
@@ -34,6 +45,9 @@ object OwnLogTextExporter {
             appendLine("Observer public key: ${packet.observerPublicKey}")
             appendLine("Own traffic: ${packet.ownTraffic}")
             appendLine("Possible own traffic: ${packet.possibleOwnTraffic}")
+            appendLine("Source keys: ${packet.trackedRelations.sourceKeys}")
+            appendLine("Destination keys: ${packet.trackedRelations.destinationKeys}")
+            appendLine("Reply keys: ${packet.trackedRelations.replyKeys}")
             appendLine("Tracked key matches: ${packet.trackedRelations.labels().joinToString(" | ")}")
             appendLine("Possible tracked keys: ${packet.trackedRelations.possibleKeys.joinToString { it.take(4).uppercase() }}")
             appendLine("Route: ${packet.path.joinToString(" -> ")}")

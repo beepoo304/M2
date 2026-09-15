@@ -229,6 +229,10 @@ private fun AppPacketStatisticsScreen(modifier: Modifier, close: () -> Unit) {
                 style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             Text("Total app running time", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(formatRunningTime(statistics.accumulatedRunningMs), fontWeight = FontWeight.Medium)
+            statistics.brokerRunningMs.toSortedMap().forEach { (broker, duration) ->
+                Text(broker, style = MaterialTheme.typography.labelMedium)
+                Text(formatRunningTime(duration), color = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }

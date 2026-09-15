@@ -5,6 +5,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrackedMentionTest {
+    @Test fun mentionPrefixDoesNotMatchAnotherName() {
+        assertFalse(TrackedMention.contains("@pawel2", setOf("pawel")))
+        assertTrue(TrackedMention.contains("@[0652] reply", setOf("0652")))
+    }
     private val names = setOf("pawel sn9pj 🛸")
 
     @Test fun bracketedReplyToTrackedDeviceIsDetected() {

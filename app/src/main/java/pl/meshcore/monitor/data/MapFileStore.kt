@@ -19,6 +19,8 @@ object MapFileStore {
         require(root.optInt("version") == 1) { "Unsupported map version" }
         val sessionJson = root.getJSONObject("session").toString()
         val key = root.getJSONObject("session").getString("key")
+        require(key.length == 64 && MeshPath.isReliableHop(key)) { "Invalid map key" }
+        require(root.getJSONObject("session").optJSONArray("events") != null) { "Missing map events" }
         return ImportedMap(MapSessionJson.decode(sessionJson, key).copy(running = false), root.optString("name"))
     }
 

@@ -13,6 +13,8 @@ import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import pl.meshcore.monitor.data.ApiHealthEntry
+import pl.meshcore.monitor.data.ApiHealthLogStore
 import pl.meshcore.monitor.data.ConnectionConfig
 import pl.meshcore.monitor.data.ConnectionConfigBus
 import pl.meshcore.monitor.data.DEFAULT_OWN_PUBLIC_KEYS
@@ -33,15 +35,6 @@ data class DeviceNeighboursState(
     val neighbours: List<DeviceNeighbour> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
-)
-
-data class ApiHealthEntry(
-    val startedAtMs: Long,
-    val lastCheckedAtMs: Long,
-    val status: String,
-    val responseMs: Long,
-    val checks: Int = 1,
-    val ongoing: Boolean = true,
 )
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
@@ -77,7 +70,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val devices = _devices.asStateFlow()
     private val _savedApis = MutableStateFlow(loadSavedApis(initialConfig.coreScopeBaseUrl))
     val savedApis = _savedApis.asStateFlow()
-    private val _apiHealthLog = MutableStateFlow<List<ApiHealthEntry>>(emptyList())
+    private val apiHistoryStore = ApiHealthLogStore(application)
+    private val _apiHealthLog = MutableStateFlow(apiHistoryStore.load(initialConfig.coreScopeBaseUrl))
     val apiHealthLog = _apiHealthLog.asStateFlow()
     private val _apiOnline = MutableStateFlow<Boolean?>(null)
     val apiOnline = _apiOnline.asStateFlow()
@@ -113,7 +107,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     if (matches.isEmpty()) device else {
                         changed = true
                         matches.forEach { seen += it.counterIdentity() }
-                        while (seen.size > SEEN_PACKET_IDS) seen.remove(seen.first())
+                        // Keep identities for the lifetime of this counter; API history must not count twice.
                         val count = device.packetCount + matches.size
                         prefs.edit().putLong("packet_counter_count_${device.publicKey}", count)
                             .putString(seenKey, JSONArray(seen.toList()).toString()).apply()
@@ -126,18 +120,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun pl.meshcore.monitor.data.LivePacket.matchesDevice(device: DeviceEntry): Boolean {
-        if (trackedRelations.confirmedKeys.any { it.equals(device.publicKey, true) }) return true
-        val name = device.name.trim().lowercase()
-        if (name.isBlank() || name.startsWith("looking up")) return false
-        val decoded = decodedJson.takeIf { it.startsWith("{") }
-            ?.let { runCatching { JSONObject(it) }.getOrNull() }
-        return decoded?.optString("sender").orEmpty().trim().equals(name, true) ||
-            decoded?.optString("name").orEmpty().trim().equals(name, true) ||
-            TrackedMention.contains(decoded?.optString("text").orEmpty(), setOf(name))
+        return trackedRelations.confirmedKeys.any { it.equals(device.publicKey, true) }
     }
 
     private fun pl.meshcore.monitor.data.LivePacket.packetEpochMillis(): Long =
-        runCatching { Instant.parse(timestamp).toEpochMilli() }.getOrDefault(0L)
+        pl.meshcore.monitor.data.WarsawTimeFormatter.epochMillis(timestamp) ?: 0L
 
     private fun pl.meshcore.monitor.data.LivePacket.counterIdentity(): String =
         hash.trim().lowercase().takeIf(String::isNotBlank)?.let { "hash#$it" }
@@ -165,51 +152,17 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun monitorApi() {
-        viewModelScope.launch {
-            while (true) {
-                val started = System.currentTimeMillis()
-                val result = withContext(Dispatchers.IO) {
-                    val base = ConnectionConfigBus.config.value.coreScopeBaseUrl.trim().let {
-                        if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
-                    }.trimEnd('/')
-                    runCatching {
-                        val request = Request.Builder().url("$base/api/packets?limit=1&_=$started")
-                            .header("Cache-Control", "no-cache").build()
-                        client.newCall(request).execute().use { response ->
-                            response.isSuccessful to Pair(
-                                "HTTP ${response.code} ${response.message}".trim(),
-                                System.currentTimeMillis() - started,
-                            )
-                        }
-                    }.getOrElse { error ->
-                        false to Pair(
-                            error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName,
-                            System.currentTimeMillis() - started,
-                        )
-                    }
-                }
-                val online = result.first
-                val status = result.second.first
-                val responseMs = result.second.second
-                _apiOnline.value = online
-                val current = _apiHealthLog.value.firstOrNull()
-                if (!online) {
-                    _apiHealthLog.value = if (current?.ongoing == true) {
-                        listOf(current.copy(lastCheckedAtMs = System.currentTimeMillis(), status = status,
-                            responseMs = responseMs, checks = current.checks + 1)) + _apiHealthLog.value.drop(1)
-                    } else {
-                        (listOf(ApiHealthEntry(started, System.currentTimeMillis(), status, responseMs)) +
-                            _apiHealthLog.value).take(API_LOG_LIMIT)
-                    }
-                } else if (current?.ongoing == true) {
-                    _apiHealthLog.value = listOf(current.copy(
-                        lastCheckedAtMs = System.currentTimeMillis(), ongoing = false,
-                    )) + _apiHealthLog.value.drop(1)
-                }
-                val interval = if (online) API_CHECK_ONLINE_INTERVAL_MS else API_CHECK_DOWN_INTERVAL_MS
-                delay((interval - (System.currentTimeMillis() - started)).coerceAtLeast(0L))
-            }
-        }
+        pl.meshcore.monitor.data.ApiHealthMonitor.start(app)
+        viewModelScope.launch { pl.meshcore.monitor.data.ApiHealthMonitor.state.collect { values ->
+            val value = values[ConnectionConfigBus.config.value.coreScopeBaseUrl.trim().trimEnd('/')]
+            _apiHealthLog.value = value?.entries.orEmpty()
+            _apiOnline.value = value?.online
+        } }
+        viewModelScope.launch { ConnectionConfigBus.config.collect { config ->
+            val value = pl.meshcore.monitor.data.ApiHealthMonitor.state.value[config.coreScopeBaseUrl.trim().trimEnd('/')]
+            _apiHealthLog.value = value?.entries.orEmpty()
+            _apiOnline.value = value?.online
+        } }
     }
 
     fun addDevice(value: String): Boolean {

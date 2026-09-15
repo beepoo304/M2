@@ -32,7 +32,7 @@ class OwnTrafficLogStore(context: Context) {
                     nodeName = item.optString("nodeName").takeIf(String::isNotBlank),
                     nodeRole = item.optString("nodeRole").takeIf(String::isNotBlank), detail = item.optString("detail"),
                     rawHex = item.optString("rawHex"), publicKey = item.optString("publicKey").takeIf(String::isNotBlank),
-                    ownTraffic = true, timestamp = item.optString("timestamp"), decodedJson = item.optString("decodedJson"),
+                    ownTraffic = item.optBoolean("ownTraffic", true), timestamp = item.optString("timestamp"), decodedJson = item.optString("decodedJson"),
                     path = item.optJSONArray("path")?.let { path ->
                         buildList { for (i in 0 until path.length()) add(path.optString(i)) }
                     }.orEmpty(),
@@ -44,6 +44,7 @@ class OwnTrafficLogStore(context: Context) {
                     }.orEmpty(),
                     trackedRelations = TrackedKeyRelations(
                         sourceKeys = item.stringSet("sourceKeys"),
+                        replyKeys = item.stringSet("replyKeys"),
                         destinationKeys = item.stringSet("destinationKeys"),
                         routeEndKeys = item.stringSet("routeEndKeys"),
                         routeKeys = item.stringSet("routeKeys"),
@@ -58,6 +59,8 @@ class OwnTrafficLogStore(context: Context) {
     fun save(packets: List<LivePacket>) {
         val array = JSONArray().apply { packets.take(MAX_ENTRIES).forEach { packet ->
             put(JSONObject().apply {
+                put("ownTraffic", packet.ownTraffic)
+                put("replyKeys", JSONArray(packet.trackedRelations.replyKeys.toList()))
                 put("id", packet.id); put("hash", packet.hash); put("time", packet.time)
                 put("payloadType", packet.payloadType); put("typeLabel", packet.typeLabel)
                 put("observerName", packet.observerName); put("observerPublicKey", packet.observerPublicKey)
@@ -78,11 +81,11 @@ class OwnTrafficLogStore(context: Context) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key()) }
         val packed = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" +
             Base64.encodeToString(cipher.doFinal(array.toString().toByteArray()), Base64.NO_WRAP)
-        prefs.edit().putString("data", packed).apply()
+        prefs.edit().putString("data", packed).commit()
     }
 
     fun clearedAt(): Long = prefs.getLong("cleared_at", 0L)
-    fun clear(now: Long) { prefs.edit().remove("data").putLong("cleared_at", now).apply() }
+    fun clear(now: Long) { prefs.edit().remove("data").putLong("cleared_at", now).commit() }
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

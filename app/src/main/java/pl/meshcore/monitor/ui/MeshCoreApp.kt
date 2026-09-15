@@ -8,6 +8,7 @@ import androidx.compose.material.icons.outlined.CellTower
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -20,7 +21,7 @@ private data class AppTab(val label: String, val icon: ImageVector)
 private val appTabs = listOf(
     AppTab("Live", Icons.AutoMirrored.Outlined.List), AppTab("My log", Icons.Outlined.Key),
     AppTab("Channels", Icons.Outlined.CellTower), AppTab("Map", Icons.Outlined.Map),
-    AppTab("Settings", Icons.Outlined.Settings),
+    AppTab("Settings", Icons.Outlined.Settings), AppTab("Guide", Icons.Outlined.MenuBook),
 )
 
 @Composable fun MeshCoreApp(onCloseApp: () -> Unit) {
@@ -42,6 +43,7 @@ private val appTabs = listOf(
         2 -> ChannelsScreen(Modifier.padding(padding), names, devices)
         3 -> NetworkMapScreen(if (mapFullscreen) Modifier.fillMaxSize() else Modifier.padding(padding), devices,
             onFullscreenChanged = { mapFullscreen = it })
-        else -> SettingsScreen(Modifier.padding(padding), settings, onCloseApp)
+        4 -> SettingsScreen(Modifier.padding(padding), settings, onCloseApp)
+        else -> GuideScreen(Modifier.padding(padding))
     } }
 }

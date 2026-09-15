@@ -25,7 +25,7 @@ class ScreenRecordingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startRecording(intent)
+            ACTION_START -> runCatching { startRecording(intent) }.onFailure { stopRecording(false) }
             ACTION_STOP -> stopRecording(true)
             ACTION_CANCEL -> stopRecording(false)
         }
@@ -33,6 +33,8 @@ class ScreenRecordingService : Service() {
     }
 
     private fun startRecording(intent: Intent) {
+        if (recorder != null) return
+        stopping = false
         createChannel()
         startForeground(NOTIFICATION_ID, NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher).setContentTitle("M² recording flight")
@@ -71,15 +73,23 @@ class ScreenRecordingService : Service() {
         if (stopping) return
         stopping = true
         val file = output
-        runCatching { recorder?.stop() }
+        val valid = runCatching { recorder?.stop() }.isSuccess
         recorder?.reset(); recorder?.release(); recorder = null
         display?.release(); display = null
         projection?.stop(); projection = null
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
         if (file != null) {
-            if (save && file.exists() && file.length() > 0) sendBroadcast(Intent(ACTION_READY).setPackage(packageName).putExtra(EXTRA_PATH, file.absolutePath))
+            if (save && valid && file.exists() && file.length() > 0) {
+                pendingVideo.value = file.absolutePath
+                sendBroadcast(Intent(ACTION_READY).setPackage(packageName).putExtra(EXTRA_PATH, file.absolutePath))
+            }
             else file.delete()
         }
+    }
+
+    override fun onDestroy() {
+        if (!stopping) stopRecording(false)
+        super.onDestroy()
     }
 
     private fun createChannel() {
@@ -88,6 +98,7 @@ class ScreenRecordingService : Service() {
     }
 
     companion object {
+        val pendingVideo = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
         const val ACTION_START="pl.meshcore.monitor.RECORD_START"
         const val ACTION_STOP="pl.meshcore.monitor.RECORD_STOP"
         const val ACTION_CANCEL="pl.meshcore.monitor.RECORD_CANCEL"

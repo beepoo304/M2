@@ -30,7 +30,9 @@ internal object TrackedNameRanges {
                         if (start >= 2 && text.substring(start - 2, start) == "@[" && end + 1 < text.length && text[end + 1] == ']') {
                             start -= 2; end += 1
                         } else if (start >= 1 && text[start - 1] == '@') start -= 1
-                        if ((start..end).none { occupied[it] }) {
+                        val before = start == 0 || !text[start - 1].isLetterOrDigit() && text[start - 1] != '_'
+                        val after = end == text.lastIndex || !text[end + 1].isLetterOrDigit() && text[end + 1] != '_'
+                        if (before && after && (start..end).none { occupied[it] }) {
                             (start..end).forEach { occupied[it] = true }
                             yield(start..end)
                         }

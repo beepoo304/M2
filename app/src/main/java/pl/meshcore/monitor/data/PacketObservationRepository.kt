@@ -23,9 +23,9 @@ data class ObservedRoute(
 )
 
 object PacketObservationRepository {
-    suspend fun load(packetId: String): PacketObservationDetails = withContext(Dispatchers.IO) {
+    suspend fun load(packetId: String, baseUrl: String = ConnectionConfigBus.config.value.coreScopeBaseUrl): PacketObservationDetails = withContext(Dispatchers.IO) {
         runCatching {
-            val base = ConnectionConfigBus.config.value.coreScopeBaseUrl.trimEnd('/')
+            val base = baseUrl.trimEnd('/')
             val request = Request.Builder().url("$base/api/packets/$packetId").build()
             NetworkModule.client.newCall(request).apply { timeout().timeout(15, TimeUnit.SECONDS) }
                 .execute().use { response ->
@@ -46,7 +46,7 @@ object PacketObservationRepository {
                 val array = runCatching { JSONArray(value) }.getOrNull() ?: continue
                 val parts = buildList {
                     for (hop in 0 until array.length()) add(array.optString(hop))
-                }.filter(String::isNotBlank)
+                }
                 val route = if (trace) MeshPath.normalizeTrace(parts) else MeshPath.normalize(parts)
                 val resolved = observation.optJSONArray("resolved_path")?.let { values ->
                     buildList { for (hop in 0 until values.length()) add(values.optString(hop)) }

@@ -19,7 +19,7 @@ enum class MapPacketFilter(val label: String) {
 
 enum class MapTrackingMode(val label: String) {
     STARTS_AT_KEY("Starts at key"),
-    ENDS_AT_KEY("Ends at key"),
+    ENDS_AT_KEY("Last recorded hop"),
     RELATED_TO_KEY("Related to key"),
     REPORTED_BY_KEY("Reported by key"),
     ALL_FOR_SELECTED_KEY("All for selected key"),
@@ -31,6 +31,10 @@ data class MapNodePoint(
     val lon: Double,
     val uncertain: Boolean = false,
     val sourceHash: String = hash,
+    val publicKey: String = hash,
+    val hopIndex: Int = 0,
+    val missingBefore: List<String> = emptyList(),
+    val unknownBefore: Boolean = false,
 )
 
 data class MapEdge(
@@ -40,6 +44,7 @@ data class MapEdge(
     val count: Int = 1,
     val longestRoute: Boolean = false,
     val reply: Boolean = false,
+    val missingGps: Boolean = false,
 )
 
 data class MapRouteEvent(
@@ -54,6 +59,9 @@ data class MapRouteEvent(
     val logicalDestinationUnavailable: Boolean = false,
     val replyToSelected: Boolean = false,
     val inferredLastHop: Boolean = false,
+    val closestObservedReply: Boolean = false,
+    val resolvedPath: List<String> = emptyList(),
+    val acceptedKeys: Set<String> = emptySet(),
 )
 
 data class MapSession(
@@ -63,13 +71,43 @@ data class MapSession(
     val running: Boolean = false,
     val startedAt: Long = 0L,
     val events: List<MapRouteEvent> = emptyList(),
+    val baseline: Map<String, Int> = emptyMap(),
+    val routingRevision: Int = RouteTrackingPolicy.REVISION,
+    val capturedPacketIds: Set<String> = emptySet(),
+    val pendingRechecks: Set<String> = emptySet(),
 )
+
+/** Keep only routes with a direct relationship to the selected key. */
+internal object MapRouteScope {
+    fun includes(event: MapRouteEvent, selectedKey: String): Boolean {
+        val hash = selectedKey.take(4)
+        return !event.closestObservedReply && (event.acceptedKeys.any { it.equals(selectedKey, true) } ||
+            hash.length == 4 && event.path.any { MeshPath.isReliableHop(it) && selectedKey.startsWith(it, true) })
+    }
+}
+
+internal object MapReplySelection {
+    fun replaceForPacket(events: List<MapRouteEvent>, packetId: String, additions: List<MapRouteEvent>): List<MapRouteEvent> =
+        events.filterNot { it.packetId == packetId } + additions
+
+    fun keepLatestSaved(events: List<MapRouteEvent>): List<MapRouteEvent> {
+        val latest = events.withIndex().filter { it.value.closestObservedReply }
+            .associate { it.value.packetId to it.index }
+        return events.filterIndexed { index, event ->
+            !event.closestObservedReply || latest[event.packetId] == index
+        }
+    }
+}
 
 internal object MapSessionJson {
     fun encode(session: MapSession): String = JSONObject().apply {
         put("key", session.key); put("filter", session.filter.name); put("trackingMode", session.trackingMode.name)
         put("running", session.running)
         put("startedAt", session.startedAt)
+        put("baseline", JSONObject(session.baseline))
+        put("routingRevision", session.routingRevision)
+        put("capturedPacketIds", JSONArray(session.capturedPacketIds.toList()))
+        put("pendingRechecks", JSONArray(session.pendingRechecks.toList()))
         put("events", JSONArray().apply { session.events.forEach { event -> put(JSONObject().apply {
             put("packetId", event.packetId); put("packetHash", event.packetHash)
             put("payloadType", event.payloadType); put("timestamp", event.timestamp)
@@ -79,6 +117,9 @@ internal object MapSessionJson {
             put("logicalDestinationUnavailable", event.logicalDestinationUnavailable)
             put("replyToSelected", event.replyToSelected)
             put("inferredLastHop", event.inferredLastHop)
+            put("closestObservedReply", event.closestObservedReply)
+            put("resolvedPath", JSONArray(event.resolvedPath))
+            put("acceptedKeys", JSONArray(event.acceptedKeys.toList()))
         }) } })
     }.toString()
 
@@ -91,6 +132,10 @@ internal object MapSessionJson {
             trackingMode = runCatching { MapTrackingMode.valueOf(root.optString("trackingMode")) }
                 .getOrDefault(MapTrackingMode.ALL_FOR_SELECTED_KEY),
             running = root.optBoolean("running"), startedAt = root.optLong("startedAt"),
+            baseline = root.optJSONObject("baseline")?.let { values -> values.keys().asSequence().associateWith { values.optInt(it) } }.orEmpty(),
+            routingRevision = root.optInt("routingRevision", 0),
+            capturedPacketIds = root.optJSONArray("capturedPacketIds")?.let { values -> List(values.length()) { values.optString(it) }.toSet() }.orEmpty(),
+            pendingRechecks = root.optJSONArray("pendingRechecks")?.let { values -> List(values.length()) { values.optString(it) }.toSet() }.orEmpty(),
             events = buildList { for (i in 0 until events.length()) events.optJSONObject(i)?.let { event ->
                 val path = event.optJSONArray("path") ?: JSONArray()
                 val eventPath = buildList { for (hop in 0 until path.length()) add(path.optString(hop)) }
@@ -100,8 +145,11 @@ internal object MapSessionJson {
                     event.optInt("payloadType"), event.optString("timestamp"), event.optLong("observedAt"),
                     eventPath, event.optBoolean("uncertainAttribution"), eligible,
                     event.optBoolean("logicalDestinationUnavailable"),
-                    event.optBoolean("replyToSelected"), event.optBoolean("inferredLastHop")))
+                    event.optBoolean("replyToSelected"), event.optBoolean("inferredLastHop"),
+                    event.optBoolean("closestObservedReply"),
+                    event.optJSONArray("resolvedPath")?.let { values -> List(values.length()) { values.optString(it) } }.orEmpty(),
+                    event.optJSONArray("acceptedKeys")?.let { values -> List(values.length()) { values.optString(it) }.toSet() }.orEmpty()))
             } },
         )
-    }.getOrDefault(MapSession(fallbackKey))
+    }.getOrElse { error -> if (raw.isBlank()) MapSession(fallbackKey) else throw IllegalArgumentException("Invalid saved map", error) }
 }

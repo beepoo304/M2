@@ -21,7 +21,10 @@ object SharedLiveRepository {
     private var source: LiveSource? = null
     private var listenerJob: Job? = null
 
-    @Synchronized fun start() {
+    private var appContext: android.content.Context? = null
+
+    @Synchronized fun start(context: android.content.Context) {
+        appContext = context.applicationContext
         if (listenerJob?.isActive == true) return
         listenerJob = scope.launch {
             while (isActive) {
@@ -29,11 +32,13 @@ object SharedLiveRepository {
                     ConnectionConfigBus.config.collectLatest { config ->
                         source?.close()
                         val next = CoreScopeRepository(config.coreScopeBaseUrl, config.ownPublicKeys, config.ownNodeNames,
-                            config.ownKeyNames, config.savedChannels)
+                            config.ownKeyNames, config.savedChannels, onBrokerUnavailable = { switchToAvailableBroker(config) })
                         source = next
                         try {
-                            launch { next.state.collect { _state.value = it } }
-                            next.run()
+                            kotlinx.coroutines.coroutineScope {
+                                launch { next.state.collect { _state.value = it } }
+                                next.run()
+                            }
                         } finally {
                             next.close()
                         }
@@ -44,6 +49,28 @@ object SharedLiveRepository {
                     _state.value = _state.value.copy(connection = ConnectionState.ERROR, error = "Live listener stopped — restarting")
                     delay(2_000)
                 }
+            }
+        }
+    }
+
+    private suspend fun switchToAvailableBroker(failedConfig: ConnectionConfig) {
+        val prefs = appContext?.getSharedPreferences("connection_settings", android.content.Context.MODE_PRIVATE) ?: return
+        val alternatives = prefs.getStringSet("saved_api_urls", emptySet()).orEmpty().sorted()
+            .filter { it.trimEnd('/') != failedConfig.coreScopeBaseUrl.trimEnd('/') }
+        for (base in alternatives) {
+            if (ConnectionConfigBus.config.value != failedConfig) return
+            val available = try {
+                val request = okhttp3.Request.Builder().url("${base.trimEnd('/')}/api/packets?limit=1")
+                    .header("Cache-Control", "no-cache").build()
+                NetworkModule.client.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build()
+                    .newCall(request).execute().use { response ->
+                        response.isSuccessful && org.json.JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") != null
+                    }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled } catch (_: Exception) { false }
+            if (available && ConnectionConfigBus.config.value == failedConfig) {
+                check(prefs.edit().putString("core_url", base).commit()) { "Cannot persist active broker" }
+                ConnectionConfigBus.update(failedConfig.copy(coreScopeBaseUrl = base))
+                return
             }
         }
     }

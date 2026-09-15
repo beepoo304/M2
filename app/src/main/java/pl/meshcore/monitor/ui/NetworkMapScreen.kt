@@ -97,7 +97,11 @@ fun NetworkMapScreen(
     var prepareFlightToken by remember { mutableIntStateOf(0) }
     var focusToken by remember { mutableIntStateOf(0) }
     var animationRunning by remember { mutableStateOf(false) }
-    var recordedVideoPath by remember { mutableStateOf<String?>(null) }
+    var flightSnapshot by remember { mutableStateOf<List<MapNodePoint>>(emptyList()) }
+    val displayRoute = if (animationToken > 0 || prepareFlightToken > 0) flightSnapshot else state.longestRoute
+    var recordedVideoPath by remember { mutableStateOf(ScreenRecordingService.pendingVideo.value) }
+    val pendingVideo by ScreenRecordingService.pendingVideo.collectAsState()
+    LaunchedEffect(pendingVideo) { recordedVideoPath = pendingVideo }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val view = LocalView.current
@@ -133,7 +137,7 @@ fun NetworkMapScreen(
             addAction(ScreenRecordingService.ACTION_READY)
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
-        onDispose { context.unregisterReceiver(receiver) }
+        onDispose { context.unregisterReceiver(receiver); context.startService(Intent(context, ScreenRecordingService::class.java).setAction(ScreenRecordingService.ACTION_CANCEL)) }
     }
     val loadMap = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
@@ -157,7 +161,7 @@ fun NetworkMapScreen(
         }
     }
     LaunchedEffect(fullscreen) { onFullscreenChanged(fullscreen) }
-    BackHandler(enabled = fullscreen) { fullscreen = false }
+    BackHandler(enabled = fullscreen) { animationToken = 0; prepareFlightToken = 0; fullscreen = false; context.startService(Intent(context, ScreenRecordingService::class.java).setAction(ScreenRecordingService.ACTION_CANCEL)) }
     DisposableEffect(fullscreen, view) {
         val window = (context as? Activity)?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, view) }
@@ -169,11 +173,11 @@ fun NetworkMapScreen(
     }
 
     recordedVideoPath?.let { capturePath ->
-        AlertDialog(onDismissRequest = { java.io.File(capturePath).delete(); recordedVideoPath = null },
+        AlertDialog(onDismissRequest = { java.io.File(capturePath).delete(); recordedVideoPath = null; ScreenRecordingService.pendingVideo.value = null },
             title = { Text("Save animation as MP4?") },
             text = { Text("The animated longest route will be saved in ${ExportLocationStore.label(context)}.") },
             confirmButton = { TextButton(onClick = {
-                recordedVideoPath = null; fileBusy = true; fileProgress = 20; exportMessage = "Saving screen recording…"
+                recordedVideoPath = null; ScreenRecordingService.pendingVideo.value = null; fileBusy = true; fileProgress = 20; exportMessage = "Saving screen recording…"
                 scope.launch(Dispatchers.IO) {
                     runCatching {
                         val source = java.io.File(capturePath)
@@ -187,17 +191,17 @@ fun NetworkMapScreen(
                         .onFailure { withContext(Dispatchers.Main) { fileBusy = false; exportMessage = "Cannot save MP4" } }
                 }
             }) { Text("YES") } },
-            dismissButton = { TextButton({ java.io.File(capturePath).delete(); recordedVideoPath = null }) { Text("NO") } })
+            dismissButton = { TextButton({ java.io.File(capturePath).delete(); recordedVideoPath = null; ScreenRecordingService.pendingVideo.value = null }) { Text("NO") } })
     }
 
     if (fullscreen) {
         Box(Modifier.fillMaxSize().background(Color(0xFF111315))) {
-            TrackingMap(state.edges, state.selectedNode, state.longestRoute, animationToken,
+            TrackingMap(state.edges, state.selectedNode, displayRoute, animationToken,
                 focusToken, prepareFlightToken, Modifier.fillMaxSize(), onAnimationStateChanged = { animationRunning = it },
                 onAnimationFinished = {
                     context.startService(Intent(context, ScreenRecordingService::class.java).setAction(ScreenRecordingService.ACTION_STOP))
                 })
-            IconButton({ fullscreen = false }, Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(12.dp)
+            IconButton({ animationToken = 0; prepareFlightToken = 0; fullscreen = false; context.startService(Intent(context, ScreenRecordingService::class.java).setAction(ScreenRecordingService.ACTION_CANCEL)) }, Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(12.dp)
                 .size(58.dp).zIndex(20f).background(Color(0xE0202327), RoundedCornerShape(14.dp))) {
                 Icon(Icons.Outlined.FullscreenExit, "Exit full screen", tint = Color.White)
             }
@@ -267,14 +271,14 @@ fun NetworkMapScreen(
         val session = state.session
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (session?.running == true || animationRunning) Button({
-                if (animationRunning) animationToken = 0 else vm.stop()
+                if (animationRunning) { animationToken = 0; prepareFlightToken = 0; context.startService(Intent(context, ScreenRecordingService::class.java).setAction(ScreenRecordingService.ACTION_CANCEL)) } else vm.stop()
             }, Modifier.weight(1f).height(40.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) {
                 Icon(Icons.Outlined.Stop, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Stop")
             } else Button(vm::start, Modifier.weight(1f).height(40.dp), enabled = state.selectedKey.isNotBlank(),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) {
                 Icon(Icons.Outlined.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Start")
             }
-            OutlinedButton({ animationToken = 0; focusToken++; vm.restart() }, Modifier.weight(1f).height(40.dp),
+            OutlinedButton({ animationToken = 0; context.startService(Intent(context, ScreenRecordingService::class.java).setAction(ScreenRecordingService.ACTION_CANCEL)); focusToken++; vm.restart() }, Modifier.weight(1f).height(40.dp),
                 enabled = state.selectedKey.isNotBlank(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)) {
                 Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Restart")
             }
@@ -306,6 +310,7 @@ fun NetworkMapScreen(
                 maxLines = 1, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = {
+                flightSnapshot = state.longestRoute.toList()
                 vm.stop()
                 vm.markLongestRouteViewed()
                 val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -328,7 +333,7 @@ fun NetworkMapScreen(
         if (fileBusy) LinearProgressIndicator({ fileProgress / 100f }, Modifier.fillMaxWidth().padding(horizontal = 14.dp))
         exportMessage?.let { Text(it, Modifier.padding(horizontal = 14.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall) }
         Box(Modifier.fillMaxWidth().weight(1f)) {
-            TrackingMap(state.edges, state.selectedNode, state.longestRoute, animationToken, focusToken, prepareFlightToken, Modifier.fillMaxSize(),
+            TrackingMap(state.edges, state.selectedNode, displayRoute, animationToken, focusToken, prepareFlightToken, Modifier.fillMaxSize(),
                 onAnimationStateChanged = { animationRunning = it },
                 onAnimationFinished = {})
             IconButton({ fullscreen = true }, Modifier.align(Alignment.TopEnd).padding(8.dp)
@@ -371,7 +376,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
         if (prepareFlightToken <= 0 || longestRoute.isEmpty()) return@LaunchedEffect
         mapView?.let { map ->
             map.mapOrientation = 0f
-            map.controller.setZoom(13.0)
+            map.controller.setZoom(longestRoute.zipWithNext().firstOrNull()?.let { (a,b) -> minOf(flightZoom(MapRouteMapper.distanceKm(a.lat,a.lon,b.lat,b.lon)),fitSegmentZoom(a,b,map.width,map.height)) } ?: 13.0)
             map.controller.setCenter(GeoPoint(longestRoute.first().lat, longestRoute.first().lon))
             map.invalidate()
         }
@@ -395,9 +400,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
             outlinePaint.color = 0xFF2196F3.toInt(); outlinePaint.strokeWidth = 16.875f; outlinePaint.alpha = 255
         }
         val revealed = mutableListOf(GeoPoint(longestRoute.first().lat, longestRoute.first().lon))
-        val totalRouteKm = longestRoute.zipWithNext().sumOf { (a, b) ->
-            MapRouteMapper.distanceKm(a.lat, a.lon, b.lat, b.lon)
-        }
+        val totalRouteKm = MapRouteMapper.measuredKm(longestRoute)
         map.overlays += flightLine
         val replyFlightOverlay = AlternatingReplyOverlay(longestRoute, sharedSegments, 16.875f).apply {
             visibleSegment = -1
@@ -407,7 +410,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
         nodeMarkers.forEach(map.overlays::add)
         flightLine.setPoints(revealed)
         map.invalidate()
-        map.controller.setZoom(13.0)
+        map.controller.setZoom(longestRoute.zipWithNext().firstOrNull()?.let { (a,b) -> minOf(flightZoom(MapRouteMapper.distanceKm(a.lat,a.lon,b.lat,b.lon)),fitSegmentZoom(a,b,map.width,map.height)) } ?: 13.0)
         map.controller.setCenter(GeoPoint(longestRoute.first().lat, longestRoute.first().lon))
         addFlightLabel(map, longestRoute.first(), "START · ${longestRoute.first().hash}")
         kotlinx.coroutines.delay(900)
@@ -418,12 +421,21 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
             val startZoom = map.zoomLevelDouble
             val bearing = routeBearing(from, to)
             val duration = ((3200.0 + distance.coerceAtMost(150.0) * 16.0) * 1.30).toLong().coerceAtMost(7300L)
-            val frames = (duration / 33L).toInt().coerceAtLeast(1)
+
             val middle = MapNodePoint("", (from.lat + to.lat) / 2.0, (from.lon + to.lon) / 2.0)
-            addFlightLabel(map, middle, "↔ %.1f km".format(java.util.Locale.US, distance))
+            val missingGps = to.missingBefore.isNotEmpty()
+            addFlightLabel(map, middle, if (missingGps) "NO GPS RPT" else "%.1f km".format(java.util.Locale.US, distance))
+            val segmentLine = Polyline().apply {
+                outlinePaint.color = if (missingGps) 0xFFAB47BC.toInt() else 0xFF2196F3.toInt()
+                outlinePaint.strokeWidth = if (missingGps) 4.2f else 16.875f
+            }
+            val markerIndex = map.overlays.indexOfFirst { it is Marker }.let { if (it < 0) map.overlays.size else it }
+            map.overlays.add(markerIndex, segmentLine)
             var targetLabelShown = false
-            repeat(frames + 1) { frame ->
-                val raw = frame.toDouble() / frames
+            val frameStart = withFrameNanos { it }
+            var raw = 0.0
+            while (raw < 1.0) {
+                raw = ((withFrameNanos { it } - frameStart) / (duration * 1_000_000.0)).coerceIn(0.0, 1.0)
                 val t = raw * raw * (3.0 - 2.0 * raw)
                 val lat = from.lat + (to.lat - from.lat) * t
                 val lon = from.lon + (to.lon - from.lon) * t
@@ -431,25 +443,25 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                 map.controller.setZoom(startZoom + (targetZoom - startZoom) * t)
                 map.mapOrientation = 0f
                 compassBearing = ((bearing + 360f) % 360f)
-                flightLine.setPoints(revealed + GeoPoint(lat, lon))
+                segmentLine.setPoints(listOf(GeoPoint(from.lat, from.lon), GeoPoint(lat, lon)))
                 replyFlightOverlay.visibleSegment = index - 1
                 replyFlightOverlay.progress = t
                 if (!targetLabelShown && raw >= .80) {
-                    val label = if (index == longestRoute.lastIndex) "FINISH → HOP $index · ${to.hash}" else "HOP $index · ${to.hash}"
+                    val label = if (index == longestRoute.lastIndex) "FINISH → HOP ${to.hopIndex} · ${to.hash}" else "HOP ${to.hopIndex} · ${to.hash}"
                     addFlightLabel(map, to, label)
                     if (index == longestRoute.lastIndex) addFlightLabel(map, to,
                         "LONGEST ROUTE · %.2f km".format(java.util.Locale.US, totalRouteKm), anchor = 2.65f)
                     targetLabelShown = true
                 }
                 map.invalidate()
-                kotlinx.coroutines.delay(33)
+
             }
             revealed += GeoPoint(to.lat, to.lon)
-            flightLine.setPoints(revealed)
+            segmentLine.setPoints(listOf(GeoPoint(from.lat, from.lon), GeoPoint(to.lat, to.lon)))
             replyFlightOverlay.progress = 1.0
             animationStep = index
             if (!targetLabelShown) {
-                val label = if (index == longestRoute.lastIndex) "FINISH → HOP $index · ${to.hash}" else "HOP $index · ${to.hash}"
+                val label = if (index == longestRoute.lastIndex) "FINISH → HOP ${to.hopIndex} · ${to.hash}" else "HOP ${to.hopIndex} · ${to.hash}"
                 addFlightLabel(map, to, label)
                 if (index == longestRoute.lastIndex) addFlightLabel(map, to,
                     "LONGEST ROUTE · %.2f km".format(java.util.Locale.US, totalRouteKm), anchor = 2.65f)
@@ -501,9 +513,11 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
             edges.sortedBy { it.reply }.filterNot { it.reply && it.matchesAny(sharedSegments) }.forEach { edge ->
                 edgePolylines(edge.copy(longestRoute = false)).forEach(map.overlays::add)
             }
-            if (longestRoute.size > 1) map.overlays += Polyline().apply {
-                setPoints(longestRoute.map { GeoPoint(it.lat, it.lon) })
-                outlinePaint.color = 0xFF2196F3.toInt(); outlinePaint.strokeWidth = 4.2f; outlinePaint.alpha = 255
+            longestRoute.zipWithNext().filter { (_, b) -> b.missingBefore.isEmpty() }.forEach { (a,b) ->
+                map.overlays += Polyline().apply {
+                    setPoints(listOf(GeoPoint(a.lat,a.lon), GeoPoint(b.lat,b.lon)))
+                    outlinePaint.color = 0xFF2196F3.toInt(); outlinePaint.strokeWidth = 4.2f; outlinePaint.alpha = 255
+                }
             }
             map.overlays += AlternatingReplyOverlay(longestRoute, sharedSegments, 4.2f)
             (edges.flatMap { listOf(it.from, it.to) } + listOfNotNull(selectedNode))
@@ -516,7 +530,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                         position = GeoPoint(point.lat, point.lon)
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                         title = if (point.uncertain) "${point.sourceHash} → ${point.hash}" else point.hash
-                        snippet = if (point.uncertain) "Possible 2-byte candidate for 1-byte hash" else "2-byte hash"
+                        snippet = "${point.sourceHash.length / 2}-byte hash"
                         val dot = GradientDrawable().apply {
                             shape = GradientDrawable.OVAL
                             setColor(when {
@@ -576,7 +590,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
     )
     if (flying) Surface(Modifier.align(Alignment.TopStart).padding(12.dp).zIndex(50f), color = Color(0xEE15181C),
         shape = RoundedCornerShape(10.dp)) {
-        Text("▲ N  %03d°".format(compassBearing.roundToInt()), color = Color.White,
+        Text("N | COURSE %03d°".format(compassBearing.roundToInt()), color = Color.White,
             fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
     }
     }
@@ -601,8 +615,8 @@ private fun fitSegmentZoom(from: MapNodePoint, to: MapNodePoint, width: Int, hei
     }
     val lonFraction = abs(to.lon - from.lon) / 360.0
     val latFraction = abs(mercator(to.lat) - mercator(from.lat))
-    val usableWidth = (width - 260).coerceAtLeast(160).toDouble()
-    val usableHeight = (height - 360).coerceAtLeast(240).toDouble()
+    val usableWidth = ((width - 260) / 2).coerceAtLeast(160).toDouble()
+    val usableHeight = ((height - 360) / 2).coerceAtLeast(240).toDouble()
     val lonZoom = if (lonFraction > 0) log2(usableWidth / 256.0 / lonFraction) else 19.0
     val latZoom = if (latFraction > 0) log2(usableHeight / 256.0 / latFraction) else 19.0
     return minOf(lonZoom, latZoom).coerceIn(4.0, 18.5)
@@ -654,7 +668,7 @@ private class AlternatingReplyOverlay(
     override fun draw(canvas: AndroidCanvas, mapView: MapView, shadow: Boolean) {
         if (shadow) return
         route.zipWithNext().forEachIndexed { index, (from, to) ->
-            if (index > visibleSegment || segmentKey(from, to) !in shared) return@forEachIndexed
+            if (to.missingBefore.isNotEmpty() || index > visibleSegment || segmentKey(from, to) !in shared) return@forEachIndexed
             val start = mapView.projection.toPixels(GeoPoint(from.lat, from.lon), Point())
             val end = mapView.projection.toPixels(GeoPoint(to.lat, to.lon), Point())
             val fullLength = hypot((end.x - start.x).toFloat(), (end.y - start.y).toFloat())
@@ -679,6 +693,7 @@ private class AlternatingReplyOverlay(
 private fun edgePolyline(edge: MapEdge) = Polyline().apply {
     setPoints(listOf(GeoPoint(edge.from.lat, edge.from.lon), GeoPoint(edge.to.lat, edge.to.lon)))
     outlinePaint.color = when {
+        edge.missingGps -> 0xFFAB47BC.toInt()
         edge.longestRoute -> 0xFF2196F3.toInt()
         edge.reply -> 0xFFF0A84B.toInt()
         edge.uncertain -> 0xFFF0A84B.toInt()

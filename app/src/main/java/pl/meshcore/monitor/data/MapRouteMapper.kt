@@ -2,148 +2,91 @@ package pl.meshcore.monitor.data
 
 import kotlin.math.*
 
+/** One geometry for drawing, distances and the flight. Unknown GPS never proves a link. */
 object MapRouteMapper {
     data class Metrics(val totalUniqueKm: Double = 0.0, val longestRouteKm: Double = 0.0,
         val longestRoute: List<MapNodePoint> = emptyList())
 
-    fun metrics(events: List<MapRouteEvent>, nodes: List<LocatedNode>): Metrics {
-        val unique = edges(events, nodes)
-        val total = unique.distinctBy { edge -> listOf(
-                "${edge.from.hash}:${edge.from.lat}:${edge.from.lon}",
-                "${edge.to.hash}:${edge.to.lat}:${edge.to.lon}",
-            ).sorted().joinToString("|") }
-            .sumOf { distanceKm(it.from.lat, it.from.lon, it.to.lat, it.to.lon) }
-        val routes = events.filter { event ->
-            event.longestRouteEligible && !event.replyToSelected && !event.uncertainAttribution && event.path.all { it.length >= 4 }
-        }.map { withoutLoops(resolve(it.path, nodes)) }
-            .filter { route -> route.size > 1 && route.none { it.uncertain } }
-        val longestRoute = routes.maxByOrNull { route -> route.zipWithNext().sumOf { (a, b) ->
-            distanceKm(a.lat, a.lon, b.lat, b.lon)
-        } }.orEmpty()
-        val longest = longestRoute.zipWithNext().sumOf { (a, b) -> distanceKm(a.lat, a.lon, b.lat, b.lon) }
-        return Metrics(total, longest, longestRoute)
-    }
-    fun edges(events: List<MapRouteEvent>, nodes: List<LocatedNode>): List<MapEdge> {
-        val aggregated = linkedMapOf<String, MapEdge>()
-        events.filter { event -> !event.inferredLastHop && event.path.all { it.length >= 4 } }.forEach { event ->
-            val segments = if (event.replyToSelected) confirmedReplySegments(event.path, nodes)
-                else resolve(event.path, nodes).zipWithNext()
-            segments.forEach { (from, to) ->
-                val uncertain = from.uncertain || to.uncertain || event.path.firstOrNull()?.length == 2 || event.uncertainAttribution
-                val a = "${from.hash}:${from.lat}:${from.lon}"
-                val b = "${to.hash}:${to.lat}:${to.lon}"
-                val link = if (a <= b) "$a|$b" else "$b|$a"
-                val id = if (event.replyToSelected) "reply:$link" else link
-                val existing = aggregated[id]
-                aggregated[id] = if (existing == null) MapEdge(from, to, uncertain,
-                    reply = event.replyToSelected)
-                    else existing.copy(
-                        from = mergePointCertainty(existing.from, from),
-                        to = mergePointCertainty(existing.to, to),
-                        count = existing.count + 1,
-                        uncertain = existing.uncertain && uncertain,
-                    )
-            }
-        }
-        return aggregated.values.toList()
-    }
-
-    private fun confirmedReplySegments(path: List<String>, nodes: List<LocatedNode>): List<Pair<MapNodePoint, MapNodePoint>> =
-        path.zipWithNext().mapNotNull { (fromHash, toHash) ->
-            val fromNodes = nodes.filter { it.publicKey.startsWith(fromHash, true) }
-            val toNodes = nodes.filter { it.publicKey.startsWith(toHash, true) }
-            val pair = fromNodes.asSequence().flatMap { from -> toNodes.asSequence().map { to -> from to to } }
-                .minByOrNull { (from, to) -> distanceKm(from.lat, from.lon, to.lat, to.lon) }
-                ?: return@mapNotNull null
-            MapNodePoint(pair.first.publicKey.take(4), pair.first.lat, pair.first.lon, sourceHash = fromHash) to
-                MapNodePoint(pair.second.publicKey.take(4), pair.second.lat, pair.second.lon, sourceHash = toHash)
-        }
-
-    private fun mergePointCertainty(first: MapNodePoint, next: MapNodePoint): MapNodePoint =
-        if (!first.uncertain || next.uncertain) first else next
-
-    fun resolve(path: List<String>, nodes: List<LocatedNode>): List<MapNodePoint> {
-        if (path.size < 2) return emptyList()
-        val candidates = path.map { raw ->
-            val hop = raw.uppercase()
-            nodes.filter { it.publicKey.startsWith(hop) }
-                .distinctBy { "${it.publicKey.take(4)}:${it.lat}:${it.lon}" }
-        }
-        if (candidates.any { it.isEmpty() }) return resolveSegments(path, candidates)
-
-        var costs = DoubleArray(candidates.first().size) { 0.0 }
-        val parents = mutableListOf<IntArray>()
-        for (index in 1 until candidates.size) {
-            val previous = candidates[index - 1]; val current = candidates[index]
-            val nextCosts = DoubleArray(current.size) { Double.POSITIVE_INFINITY }
-            val nextParents = IntArray(current.size)
-            current.forEachIndexed { currentIndex, node ->
-                previous.forEachIndexed { previousIndex, prior ->
-                    val cost = costs[previousIndex] + distanceKm(prior.lat, prior.lon, node.lat, node.lon)
-                    if (cost < nextCosts[currentIndex]) { nextCosts[currentIndex] = cost; nextParents[currentIndex] = previousIndex }
-                }
-            }
-            parents += nextParents; costs = nextCosts
-        }
-        var chosen = costs.indices.minByOrNull { costs[it] } ?: return emptyList()
-        val selected = MutableList(path.size) { 0 }
-        selected[path.lastIndex] = chosen
-        for (index in path.lastIndex downTo 1) { chosen = parents[index - 1][chosen]; selected[index - 1] = chosen }
-        return path.indices.map { index -> candidates[index][selected[index]].let {
-            MapNodePoint(it.publicKey.take(4), it.lat, it.lon,
-                uncertain = path[index].length == 2,
-                sourceHash = path[index].uppercase())
-        } }
-    }
-
-    /** Removes backtracking loops so a displayed route never returns over an earlier blue segment. */
-    private fun withoutLoops(route: List<MapNodePoint>): List<MapNodePoint> {
+    fun resolve(path: List<String>, nodes: List<LocatedNode>, resolvedPath: List<String> = emptyList(), directory: List<NodeGpsInfo> = MapNodeRepository.directory.value): List<MapNodePoint> {
+        if (!MeshPath.isTrackable(path)) return emptyList()
+        if (path.withIndex().any { (index, hash) ->
+            resolvedPath.getOrNull(index).isNullOrBlank() && nodes.filter { it.publicKey.startsWith(hash,true) }.map { it.publicKey.uppercase() }.distinct().size > 1
+        }) return emptyList()
         val result = mutableListOf<MapNodePoint>()
-        val usedEdges = mutableSetOf<String>()
-        route.forEach { point ->
-            val previous = result.indexOfFirst { sameLocation(it, point) }
-            if (previous >= 0) {
-                while (result.lastIndex > previous) result.removeAt(result.lastIndex)
-                usedEdges.clear()
-                result.zipWithNext().forEach { (a, b) -> usedEdges += edgeId(a, b) }
-            } else {
-                val prior = result.lastOrNull()
-                if (prior == null || usedEdges.none { it == edgeId(prior, point) }) {
-                    if (prior != null) usedEdges += edgeId(prior, point)
-                    result += point
-                }
+        val missing = mutableListOf<String>()
+        var unknown = false
+        path.forEachIndexed { index, hash ->
+            val full = resolvedPath.getOrNull(index).orEmpty()
+            val candidates = nodes.filter { it.publicKey.startsWith(hash, true) }.distinctBy { it.publicKey.uppercase() }
+            val node = if (full.length == 64 && full.startsWith(hash, true))
+                candidates.singleOrNull { it.publicKey.equals(full, true) }
+            else if (full.isBlank()) candidates.singleOrNull() else null
+            if (node == null) {
+                if (NodeGpsPolicy.confirmedMissingGps(hash, directory, full)) missing += hash else unknown = true
+            }
+            else {
+                result += MapNodePoint(node.publicKey.take(4), node.lat, node.lon,
+                    sourceHash = hash, publicKey = node.publicKey, hopIndex = index,
+                    missingBefore = if (result.isEmpty()) emptyList() else missing.toList(),
+                    unknownBefore = result.isNotEmpty() && unknown)
+                missing.clear(); unknown = false
             }
         }
         return result
     }
 
-    private fun coordinateId(point: MapNodePoint) = "%.5f:%.5f".format(java.util.Locale.US, point.lat, point.lon)
-    private fun edgeId(a: MapNodePoint, b: MapNodePoint) = listOf(coordinateId(a), coordinateId(b)).sorted().joinToString("|")
-    private fun sameLocation(a: MapNodePoint, b: MapNodePoint) =
-        distanceKm(a.lat, a.lon, b.lat, b.lon) < SAME_RPT_TOLERANCE_KM
+    private fun route(event: MapRouteEvent, nodes: List<LocatedNode>, directory: List<NodeGpsInfo>) = resolve(event.path, nodes, event.resolvedPath, directory)
+    fun measuredKm(route: List<MapNodePoint>): Double = route.zipWithNext()
+        .filter { (_, b) -> b.missingBefore.isEmpty() && !b.unknownBefore }
+        .sumOf { (a, b) -> distanceKm(a.lat, a.lon, b.lat, b.lon) }
 
-    private const val SAME_RPT_TOLERANCE_KM = 0.35
+    fun metrics(events: List<MapRouteEvent>, nodes: List<LocatedNode>, directory: List<NodeGpsInfo> = MapNodeRepository.directory.value): Metrics {
+        val total = edges(events, nodes, directory).filterNot { it.missingGps }.distinctBy { edgeId(it.from, it.to) }
+            .sumOf { distanceKm(it.from.lat, it.from.lon, it.to.lat, it.to.lon) }
+        val routes = events.filter { it.longestRouteEligible && !it.replyToSelected && !it.uncertainAttribution && MeshPath.isTrackable(it.path) }
+            .flatMap { splitAtUnknown(route(it, nodes, directory)) }.map(::withoutLoops).filter { it.size > 1 }
+        val longest = routes.maxByOrNull(::measuredKm).orEmpty()
+        return Metrics(total, measuredKm(longest), longest)
+    }
 
-    private fun resolveSegments(path: List<String>, candidates: List<List<LocatedNode>>): List<MapNodePoint> {
-        // Keep every located point in packet order. Unknown positions are omitted,
-        // while the surrounding known points remain connected on the map.
-        val resolved = mutableListOf<MapNodePoint>()
-        candidates.forEachIndexed { index, options ->
-            if (options.isNotEmpty()) {
-                val selected = resolved.lastOrNull()?.let { prior ->
-                    options.minByOrNull { distanceKm(prior.lat, prior.lon, it.lat, it.lon) }
-                } ?: options.first()
-                resolved += MapNodePoint(selected.publicKey.take(4), selected.lat, selected.lon,
-                    uncertain = path[index].length == 2,
-                    sourceHash = path[index].uppercase())
+    fun edges(events: List<MapRouteEvent>, nodes: List<LocatedNode>, directory: List<NodeGpsInfo> = MapNodeRepository.directory.value): List<MapEdge> {
+        val result = linkedMapOf<String, MapEdge>()
+        events.filter { !it.inferredLastHop && MeshPath.isTrackable(it.path) }.forEach { event ->
+            route(event, nodes, directory).zipWithNext().forEach segment@{ (a, b) ->
+                if (b.unknownBefore) return@segment
+                val missing = b.missingBefore.isNotEmpty()
+                val id = "${if (missing) "gps" else if (event.replyToSelected) "reply" else "route"}:${edgeId(a,b)}"
+                val previous = result[id]
+                result[id] = previous?.copy(count = previous.count + 1)
+                    ?: MapEdge(a, b, event.uncertainAttribution, reply = event.replyToSelected, missingGps = missing)
             }
         }
-        return resolved
+        return result.values.toList()
+    }
+
+    fun splitAtUnknown(route: List<MapNodePoint>): List<List<MapNodePoint>> {
+        val groups = mutableListOf<MutableList<MapNodePoint>>()
+        route.forEach { point ->
+            if (groups.isEmpty() || point.unknownBefore) groups += mutableListOf<MapNodePoint>()
+            groups.last() += point
+        }
+        return groups
+    }
+
+    private fun edgeId(a: MapNodePoint, b: MapNodePoint) = listOf(a.publicKey.uppercase(), b.publicKey.uppercase()).sorted().joinToString("|")
+    private fun withoutLoops(route: List<MapNodePoint>): List<MapNodePoint> {
+        val result = mutableListOf<MapNodePoint>()
+        route.forEach { point ->
+            val previous = result.indexOfFirst { it.publicKey.equals(point.publicKey, true) }
+            if (previous >= 0) while (result.lastIndex > previous) result.removeAt(result.lastIndex)
+            else result += point
+        }
+        return result
     }
 
     fun distanceKm(aLat: Double, aLon: Double, bLat: Double, bLon: Double): Double {
         val dLat = Math.toRadians(bLat - aLat); val dLon = Math.toRadians(bLon - aLon)
-        val value = sin(dLat / 2).pow(2) + cos(Math.toRadians(aLat)) * cos(Math.toRadians(bLat)) * sin(dLon / 2).pow(2)
+        val value = (sin(dLat / 2).pow(2) + cos(Math.toRadians(aLat)) * cos(Math.toRadians(bLat)) * sin(dLon / 2).pow(2)).coerceIn(0.0, 1.0)
         return 6371.0 * 2 * atan2(sqrt(value), sqrt(1 - value))
     }
 }

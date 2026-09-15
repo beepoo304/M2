@@ -15,69 +15,50 @@ import org.json.JSONObject
 import java.time.Instant
 
 class OwnTrafficLogViewModel(application: Application) : AndroidViewModel(application) {
-    private val store = OwnTrafficLogStore(application)
+    init { OwnTrafficLogEngine.start(application) }
+    val packets = OwnTrafficLogEngine.packets
+    fun clear() = OwnTrafficLogEngine.clear()
+}
+
+object OwnTrafficLogEngine {
+    private lateinit var store: OwnTrafficLogStore
+    private var job: kotlinx.coroutines.Job? = null
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
     private val entries = LinkedHashMap<String, LivePacket>()
-    private val ignoredIds = mutableSetOf<String>()
-    private var clearedAt = store.clearedAt()
-    private var lastPersistedAt = 0L
-    private val _packets = MutableStateFlow(store.load().also { saved ->
-        saved.asReversed().forEach { entries[it.id] = it }
-    })
+    private var clearedAt = 0L
+    private val _packets = MutableStateFlow<List<LivePacket>>(emptyList())
     val packets = _packets.asStateFlow()
 
-    init {
-        viewModelScope.launch {
-            SharedLiveRepository.state.collect { state ->
-                var changed = false
-                var containsNewEntry = false
-                val trackedNames = ConnectionConfigBus.config.value.ownNodeNames
-                state.packets.asReversed().filter { packet ->
-                    packet.belongsInMyLog(trackedNames) && packet.id !in ignoredIds && packet.epochMillis() > clearedAt
-                }.forEach { packet ->
-                    if (entries[packet.id] != packet) {
-                        containsNewEntry = containsNewEntry || packet.id !in entries
-                        entries[packet.id] = packet
-                        changed = true
-                    }
-                }
-                while (entries.size > MAX_ENTRIES) { entries.remove(entries.keys.first()); changed = true }
-                _packets.value = entries.values.toList().asReversed()
-                val now = System.currentTimeMillis()
-                if (changed && (containsNewEntry || lastPersistedAt == 0L || now - lastPersistedAt >= PERSIST_INTERVAL_MS)) {
-                    store.save(_packets.value)
-                    lastPersistedAt = now
-                }
-            }
+    @Synchronized fun start(context: android.content.Context) {
+        if (job?.isActive == true) return
+        store = OwnTrafficLogStore(context)
+        clearedAt = store.clearedAt()
+        entries.clear()
+        store.load().forEach { entries[it.identity()] = it }
+        _packets.value = entries.values.sortedByDescending { it.epochMillis() }
+        job = scope.launch {
+            SharedLiveRepository.state.collect { live -> update(live.packets) }
         }
     }
 
-    fun clear() {
-        ignoredIds.clear()
-        ignoredIds += SharedLiveRepository.state.value.packets.map { it.id }
-        entries.clear()
-        _packets.value = emptyList()
+    @Synchronized private fun update(incoming: List<LivePacket>) {
+        val keys = ConnectionConfigBus.config.value.ownPublicKeys
+        incoming.filter { packet ->
+            packet.epochMillis() > clearedAt && packet.trackedRelations.confirmedKeys.any { it in keys }
+        }.forEach { packet -> entries[packet.identity()] = packet }
+        val ordered = entries.values.sortedByDescending { it.epochMillis() }.take(250)
+        entries.clear(); ordered.forEach { entries[it.identity()] = it }
+        if (_packets.value != ordered) {
+            runCatching { store.save(ordered) }.onSuccess { _packets.value = ordered }
+        }
+    }
+
+    @Synchronized fun clear() {
+        if (!::store.isInitialized) return
         clearedAt = System.currentTimeMillis()
-        store.clear(clearedAt)
-    }
-
-    private companion object {
-        const val MAX_ENTRIES = 250
-        const val PERSIST_INTERVAL_MS = 10_000L
+        entries.clear(); _packets.value = emptyList(); store.clear(clearedAt)
     }
 }
 
-private fun LivePacket.epochMillis(): Long = runCatching { Instant.parse(timestamp).toEpochMilli() }.getOrDefault(Long.MAX_VALUE)
-
-private fun LivePacket.belongsInMyLog(trackedNames: Set<String>): Boolean {
-    val relations = trackedRelations
-    if (relations.sourceKeys.isNotEmpty() || relations.destinationKeys.isNotEmpty() ||
-        relations.routeEndKeys.isNotEmpty() || relations.routeKeys.isNotEmpty()) return true
-    if (possibleOwnTraffic) return false
-    val decoded = decodedJson.takeIf { it.startsWith("{") }
-        ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return false
-    val sender = decoded.optString("sender").trim()
-    val name = decoded.optString("name").trim()
-    val text = decoded.optString("text")
-    return trackedNames.any { it.equals(sender, true) || it.equals(name, true) } ||
-        TrackedMention.contains(text, trackedNames)
-}
+private fun LivePacket.identity(): String = hash.trim().lowercase().ifBlank { "$payloadType:$timestamp:$rawHex" }
+private fun LivePacket.epochMillis(): Long = pl.meshcore.monitor.data.WarsawTimeFormatter.epochMillis(timestamp) ?: 0L

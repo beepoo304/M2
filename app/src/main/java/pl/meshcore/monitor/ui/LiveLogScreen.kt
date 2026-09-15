@@ -32,6 +32,7 @@ import org.json.JSONObject
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun LiveLogScreen(modifier: Modifier, vm: LiveLogViewModel = viewModel()) {
+    val gpsDirectory by MapNodeRepository.directory.collectAsState()
     val state by vm.state.collectAsState(); val refreshing by vm.refreshing.collectAsState()
     val config by ConnectionConfigBus.config.collectAsState()
     var selected by remember { mutableStateOf<LivePacket?>(null) }; val listState = rememberLazyListState()
@@ -40,7 +41,7 @@ import org.json.JSONObject
         infiniteRepeatable(tween(1800, easing = LinearEasing)), label = "rotation")
     val connected = state.connection == ConnectionState.CONNECTED
     val statusColor = if (connected) MaterialTheme.colorScheme.primary else if (state.connection == ConnectionState.ERROR) MaterialTheme.colorScheme.error else Color(0xFFF0A84B)
-    selected?.let { PacketDetailsDialog(it) { selected = null } }
+    selected?.let { chosen -> PacketDetailsDialog(state.packets.firstOrNull { it.id == chosen.id } ?: chosen) { selected = null } }
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(16.dp)) {
             Column { Text("LIVE LOG", fontWeight = FontWeight.Bold); Text("Newest first · ${state.packets.size} / 250",
@@ -60,12 +61,17 @@ import org.json.JSONObject
                 }
                 Column(Modifier.fillMaxWidth().clickable { selected = packet }.padding(horizontal = 16.dp, vertical = 10.dp)) {
                     Row { Text(packet.time, color = color, fontFamily = FontFamily.Monospace, fontSize = 13.sp); Spacer(Modifier.weight(1f)); Text(packet.typeLabel, color = color, fontSize = 13.sp) }
-                    Text(packet.nodeName ?: packet.observerName, color = color, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    Text(liveIdentityLabel(packet), color = color, fontWeight = FontWeight.Medium, fontSize = 13.sp)
                     TrackedNameText(packet.detail, config.ownNodeNames, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp))
                     val matches = packet.trackedRelations.labels()
+                    packet.observationDetails?.routes.orEmpty().flatMap { it.path }.distinct().filter { hash ->
+                        NodeGpsPolicy.confirmedMissingGps(hash, gpsDirectory)
+                    }.forEach { hash -> Text("NO GPS FOR $hash", color = Color(0xFFAB47BC), style = MaterialTheme.typography.labelSmall) }
                     if (matches.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        matches.forEach { match -> Text(match, color = if (match.startsWith("REPLY TO")) Color(0xFFF0A84B) else MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp)) }
+                        matches.forEach { match -> Row { Text(match, color = if (match.startsWith("REPLY TO")) Color(0xFFF0A84B) else MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp))
+                            if (match.startsWith("REPLY TO") && packet.observationDetails?.loadSucceeded == true && packet.trackedRelations.replyKeys.none { key -> packet.observationDetails?.routes.orEmpty().any { route -> RouteTrackingPolicy.event(packet, route, config.ownPublicKeys, key, MapTrackingMode.ALL_FOR_SELECTED_KEY) != null } }) Text("  NO ROUTE", color = Color.Red, fontSize = 9.sp)
+                        } }
                     }
                     if (packet.trackedRelations.possibleKeys.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                         packet.trackedRelations.possibleKeys.forEach { key -> Text(
@@ -82,6 +88,7 @@ import org.json.JSONObject
 
 @Composable internal fun PacketDetailsDialog(packet: LivePacket, onDismiss: () -> Unit) {
     val context = LocalContext.current; val key = packet.publicKey.orEmpty().ifBlank { packet.observerPublicKey }
+    val gpsDirectory by MapNodeRepository.directory.collectAsState()
     val config by ConnectionConfigBus.config.collectAsState()
     var showAllRoutes by remember(packet.id) { mutableStateOf(false) }
     var networkDetails by remember(packet.id) { mutableStateOf<PacketObservationDetails?>(null) }
@@ -89,16 +96,23 @@ import org.json.JSONObject
     val decoded = remember(packet.decodedJson) {
         packet.decodedJson.takeIf { it.startsWith("{") }?.let { runCatching { JSONObject(it) }.getOrNull() }
     }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(packet.nodeName ?: packet.observerName, fontSize = 16.sp) }, text = {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(liveIdentityLabel(packet), fontSize = 16.sp) }, text = {
         ProvideTextStyle(MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Text("${packet.typeLabel} · ${packet.time}") }
             if (packet.payloadType == 5) {
                 val channel = decoded?.optString("channel").orEmpty()
                 val sender = decoded?.optString("sender").orEmpty()
+                val explicitSenderHash = decoded?.optString("srcHash").orEmpty().trim()
+                    .takeIf { it.length >= 4 && it.length % 2 == 0 && it.all(Char::isHexDigit) }
+                    ?: decoded?.optString("pubKey").orEmpty().trim()
+                        .takeIf { it.length == 64 && it.all(Char::isHexDigit) }?.take(4)
                 val message = decoded?.optString("text").orEmpty()
                 item { Text("Channel: ${channel.ifBlank { "Private channel" }}", fontWeight = FontWeight.Medium) }
-                if (sender.isNotBlank()) item { Text("Sender: $sender") }
+                if (sender.isNotBlank()) item {
+                    Text("Sender: $sender")
+                    Text("Sender hash: ${explicitSenderHash?.uppercase() ?: "unavailable"}")
+                }
                 item { Text(if (message.isNotBlank()) message else "Message content is not available", color = Color(0xFF2196F3)) }
             }
             val packetMatchLabels = packet.trackedRelations.labels()
@@ -109,9 +123,9 @@ import org.json.JSONObject
                         fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall) }
                 }
             }
-            val allRoutes = networkDetails?.routes.orEmpty()
+            val allRoutes = (networkDetails ?: packet.observationDetails)?.routes.orEmpty()
             val excludedOneByteRoutes = allRoutes.count { route -> route.path.any { it.length < 4 } }
-            val routes = allRoutes.filter { route -> route.path.all { it.length >= 4 } }
+            val routes = allRoutes.filter { route -> MeshPath.isTrackable(route.path) }
             val routeRelations = routes.associateWith { route ->
                 TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, config.ownPublicKeys)
                     .merge(TrackedKeyMatcher.observer(route.observerPublicKey, config.ownPublicKeys))
@@ -126,7 +140,7 @@ import org.json.JSONObject
             if (networkDetails == null) {
                 item { Text("Route: ${packet.path.takeIf { it.isNotEmpty() }?.joinToString(" → ") ?: "Direct / unavailable"}") }
             } else if (routes.isEmpty()) {
-                item { Text("Observed routes: Direct") }
+                item { Text("No eligible recorded route") }
             } else {
                 item { Text(if (trackedRoutes.isNotEmpty() && !showAllRoutes) "Tracked routes (${trackedRoutes.size})" else "Observed routes (${routes.size})", fontWeight = FontWeight.Medium) }
                 MeshPath.hashSizeBytes(routes.map { it.path })?.let { bytes -> item { Text("Path hashes: $bytes ${if (bytes == 1) "byte" else "bytes"} per hop", style = MaterialTheme.typography.bodySmall) } }
@@ -150,13 +164,17 @@ import org.json.JSONObject
                                 val confirmedHop = TrackedKeyMatcher.exactFull(resolved, config.ownPublicKeys).isNotEmpty() ||
                                     TrackedKeyMatcher.reliableHash(hop, config.ownPublicKeys).isNotEmpty()
                                 val possibleHop = !confirmedHop && TrackedKeyMatcher.possibleOneByte(hop, config.ownPublicKeys).isNotEmpty()
-                                if (confirmedHop || possibleHop) {
+                                val noGps = NodeGpsPolicy.confirmedMissingGps(hop, gpsDirectory, resolved.orEmpty())
+                                if (confirmedHop || possibleHop || noGps) {
                                     withStyle(SpanStyle(
-                                        color = if (confirmedHop) MaterialTheme.colorScheme.primary else Color(0xFFF0A84B),
+                                        color = if (noGps) Color(0xFFAB47BC) else if (confirmedHop) MaterialTheme.colorScheme.primary else Color(0xFFF0A84B),
                                         fontWeight = FontWeight.Bold,
                                     )) { append(hop) }
                                 } else append(hop)
                             }
+                        }
+                        displayPath.filter { hash -> NodeGpsPolicy.confirmedMissingGps(hash, gpsDirectory) }.forEach { hash ->
+                            Text("NO GPS FOR $hash", color = Color(0xFFAB47BC), style = MaterialTheme.typography.labelSmall)
                         }
                         Text(highlightedRoute, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                         Text("${(displayPath.size - 1).coerceAtLeast(0)} hops · ${route.rssi?.let { "$it dBm" } ?: "RSSI —"} · ${route.snr?.let { "$it dB" } ?: "SNR —"}", style = MaterialTheme.typography.labelSmall)
@@ -186,8 +204,8 @@ import org.json.JSONObject
             }
             item { Text("Total observations: ${networkDetails?.observationCount ?: packet.observationCount}") }
             if (networkDetails == null || routes.isEmpty()) item { Text("Signal: ${packet.rssi?.let { "$it dBm" } ?: "—"} · SNR: ${packet.snr?.let { "$it dB" } ?: "—"}") }
-            item { Text("Public key", fontWeight = FontWeight.Medium); Text(key.ifBlank { "Not carried by this packet" }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
-            item { Text("Observer: ${packet.observerName}") }
+            item { Text(if (packet.publicKey.isNullOrBlank()) "Observer key" else "Source key", fontWeight = FontWeight.Medium); Text(key.ifBlank { "Not available" }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+            item { Text("Reported by: ${packet.observerName}") }
             item { Text("Hash: ${packet.hash}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall) }
             item { Text("Raw: ${packet.rawHex}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall, maxLines = 6) }
         } }
@@ -201,3 +219,15 @@ import org.json.JSONObject
         clipboard.setPrimaryClip(ClipData.newPlainText("MeshCore public key", key))
     }) { Text("Copy key") } } }, dismissButton = { TextButton(onDismiss) { Text("Close") } })
 }
+
+private fun liveIdentityLabel(packet: LivePacket): String {
+    val sender = packet.decodedJson.takeIf { it.startsWith("{") }
+        ?.let { runCatching { JSONObject(it).optString("sender").trim() }.getOrNull() }.orEmpty()
+    return when {
+        sender.isNotBlank() -> "Sender: $sender"
+        !packet.nodeName.isNullOrBlank() -> "${packet.nodeRole ?: "UNKNOWN"}: ${packet.nodeName}"
+        else -> "OBSERVER: ${packet.observerName}"
+    }
+}
+
+private fun Char.isHexDigit(): Boolean = this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'

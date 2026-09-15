@@ -1,5 +1,6 @@
 package pl.meshcore.monitor.ui
 
+import pl.meshcore.monitor.data.ApiHealthEntry
 import android.content.Intent
 import android.net.Uri
 import android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -38,6 +39,7 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
     val devices by vm.devices.collectAsState(); val active by ConnectionConfigBus.config.collectAsState()
     val savedApis by vm.savedApis.collectAsState()
     var url by rememberSaveable { mutableStateOf(vm.initialConfig.coreScopeBaseUrl) }
+    LaunchedEffect(active.coreScopeBaseUrl) { url = active.coreScopeBaseUrl }
     var key by rememberSaveable { mutableStateOf("") }; var error by remember { mutableStateOf(false) }
     var show by remember { mutableStateOf(false) }
     var showApiLog by remember { mutableStateOf(false) }
@@ -246,7 +248,7 @@ private fun DeviceNeighboursDialog(state: DeviceNeighboursState, refresh: () -> 
 private fun ApiLogDialog(online: Boolean?, entries: List<ApiHealthEntry>, close: () -> Unit) {
     AlertDialog(
         onDismissRequest = close,
-        title = { Text("LIVE API LOG") },
+        title = { Column { Text("LIVE API LOG"); Text(pl.meshcore.monitor.data.ConnectionConfigBus.config.value.coreScopeBaseUrl, style = MaterialTheme.typography.labelSmall) } },
         text = {
             Column {
                 Text(

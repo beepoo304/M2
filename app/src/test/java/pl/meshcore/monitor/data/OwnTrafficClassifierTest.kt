@@ -39,10 +39,18 @@ class OwnTrafficClassifierTest {
             listOf("AAEF", "F480"), emptyList(), setOf(ownKey))
         assertTrue(final.routeKeys.isEmpty())
         assertEquals(setOf(ownKey), final.routeEndKeys)
-        assertEquals(listOf("ROUTE ENDS AT · F480"), final.labels())
+        assertEquals(listOf("LAST RECORDED HOP · F480"), final.labels())
 
         val reported = final.merge(TrackedKeyMatcher.observer(ownKey, setOf(ownKey)))
-        assertEquals(listOf("ROUTE ENDS AT · F480", "REPORTED BY · F480"), reported.labels())
+        assertEquals(listOf("LAST RECORDED HOP · F480", "REPORTED BY · F480"), reported.labels())
+    }
+
+    @Test
+    fun singleHopIsLastRecordedHop() {
+        val single = TrackedKeyMatcher.resolvedRoute(listOf("F480"), emptyList(), setOf(ownKey))
+        assertTrue(single.routeKeys.isEmpty())
+        assertEquals(setOf(ownKey), single.routeEndKeys)
+        assertEquals(listOf("LAST RECORDED HOP · F480"), single.labels())
     }
 
     @Test

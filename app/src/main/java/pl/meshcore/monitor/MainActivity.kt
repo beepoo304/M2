@@ -45,7 +45,7 @@ class MainActivity : ComponentActivity() {
             ownKeyNames = keys.mapNotNull { key -> prefs.getString("device_name_$key", null)?.let { key to it.trim().lowercase() } }.toMap(),
             savedChannels = SecureChannelStore(this).load(),
         ))
-        SharedLiveRepository.start()
+        SharedLiveRepository.start(this)
         ChannelStatisticsEngine.start(this)
         AppPacketStatisticsEngine.start(this)
         ContextCompat.startForegroundService(this, Intent(this, LiveListenerService::class.java))

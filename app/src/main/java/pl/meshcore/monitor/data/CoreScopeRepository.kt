@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.Request
@@ -47,7 +49,10 @@ data class LivePacket(
     val firstSeen: String = "",
     val matchedOwnKeys: Set<String> = emptySet(),
     val trackedRelations: TrackedKeyRelations = TrackedKeyRelations(),
+    val observationDetails: PacketObservationDetails? = null,
 )
+
+val LivePacket.stableIdentity: String get() = hash.trim().lowercase().ifBlank { "$payloadType:$timestamp:${rawHex.trim().lowercase()}" }
 
 enum class ConnectionState { CONNECTING, CONNECTED, DISCONNECTED, ERROR }
 
@@ -71,6 +76,7 @@ class CoreScopeRepository(
     private val ownNodeNames: Set<String> = emptySet(),
     private val ownKeyNames: Map<String, String> = emptyMap(),
     private val savedChannels: List<SavedChannel> = emptyList(),
+    private val onBrokerUnavailable: suspend () -> Unit = {},
 ) : LiveSource {
     private val httpBase = baseUrl.trim().let {
         if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
@@ -84,6 +90,10 @@ class CoreScopeRepository(
     private val stopped = AtomicBoolean(false)
     private var socket: WebSocket? = null
     @Volatile private var lastSuccessfulFetch = 0L
+    private var failedSince = 0L
+    private var nextOutageCheck = 0L
+    private val refreshMutex = Mutex()
+    private val observationDetailsCache = ConcurrentHashMap<String, PacketObservationDetails>()
     private val observationMatchCache = ConcurrentHashMap<String, ObservationMatch>()
 
     override suspend fun run() {
@@ -94,17 +104,27 @@ class CoreScopeRepository(
         var lastReconnect = System.currentTimeMillis()
         var failureBackoff = 0L
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
-            if (refreshRequested.getAndSet(false)) {
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            val outageWaiting = nextOutageCheck > nowElapsed
+            if (failedSince > 0L && nowElapsed - failedSince >= 30_000L && !outageWaiting) {
+                nextOutageCheck = nowElapsed + 180_000L
+                onBrokerUnavailable()
+                kotlinx.coroutines.yield()
+                failureBackoff = if (refreshPackets()) 0L else 180_000L
+                lastPoll = System.currentTimeMillis()
+            }
+            if (!outageWaiting && nextOutageCheck == 0L && refreshRequested.get() && System.currentTimeMillis() - lastPoll >= TrafficRefreshPolicy.liveIntervalMs()) {
+                refreshRequested.set(false)
                 failureBackoff = if (refreshPackets()) 0L else nextBackoff(failureBackoff)
                 lastPoll = System.currentTimeMillis()
             }
-            if (reconnectRequested.get() && System.currentTimeMillis() - lastReconnect >= 5_000) {
+            if (!outageWaiting && reconnectRequested.get() && System.currentTimeMillis() - lastReconnect >= 5_000) {
                 reconnectRequested.set(false)
                 connectWebSocket()
                 lastReconnect = System.currentTimeMillis()
             }
             val pollInterval = if (failureBackoff > 0L) failureBackoff else TrafficRefreshPolicy.liveIntervalMs()
-            if (System.currentTimeMillis() - lastPoll >= pollInterval) {
+            if (!outageWaiting && System.currentTimeMillis() - lastPoll >= pollInterval) {
                 failureBackoff = if (refreshPackets()) 0L else nextBackoff(failureBackoff)
                 lastPoll = System.currentTimeMillis()
             }
@@ -148,26 +168,33 @@ class CoreScopeRepository(
         })
     }
 
-    private suspend fun refreshPackets(): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun refreshPackets(): Boolean = refreshMutex.withLock { withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder().url("$httpBase/api/packets?limit=250&_=${System.currentTimeMillis()}")
                 .header("Cache-Control", "no-cache").get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) error("HTTP ${response.code}")
-                val source = JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") ?: return@use
+                val source = JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") ?: error("Missing packets array")
                 val parsedPackets = buildList {
                     for (index in 0 until minOf(source.length(), LIVE_LOG_LIMIT)) parsePacket(source.optJSONObject(index))?.let(::add)
                 }.distinctBy { it.id }.take(LIVE_LOG_LIMIT)
                 val packets = enrichOwnTraffic(parsedPackets)
+                if (stopped.get()) return@use
+                failedSince = 0L
+                nextOutageCheck = 0L
                 lastSuccessfulFetch = System.currentTimeMillis()
                 _state.value = _state.value.copy(packets = packets, connection = ConnectionState.CONNECTED, error = null, revision = _state.value.revision + 1)
             }
             true
         } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            if (failedSince == 0L) failedSince = android.os.SystemClock.elapsedRealtime()
             Log.e("M2Live", "Packet refresh failed", error)
             if (System.currentTimeMillis() - lastSuccessfulFetch >= 6_000) _state.value = _state.value.copy(connection = ConnectionState.ERROR, error = "Live API unavailable — retrying")
             false
         }
+    }
+
     }
 
     private suspend fun enrichOwnTraffic(packets: List<LivePacket>): List<LivePacket> {
@@ -175,6 +202,7 @@ class CoreScopeRepository(
 
         val activeIds = packets.mapTo(mutableSetOf(), LivePacket::id)
         observationMatchCache.keys.retainAll(activeIds)
+        observationDetailsCache.keys.retainAll(activeIds)
         val now = System.currentTimeMillis()
         val semaphore = Semaphore(MAX_OBSERVATION_REQUESTS)
 
@@ -189,16 +217,17 @@ class CoreScopeRepository(
                     val cached = observationMatchCache[packet.id]
                     val cacheIsFresh = cached != null &&
                         cached.observationCount == packet.observationCount &&
-                        (cached.match.confirmed || now - cached.checkedAt < NEGATIVE_MATCH_TTL_MS)
+                        (now - cached.checkedAt < 30_000L)
                     val match = if (cacheIsFresh) {
                         cached.match
                     } else {
                         semaphore.withPermit {
-                            val details = PacketObservationRepository.load(packet.id)
+                            val details = PacketObservationRepository.load(packet.id, httpBase)
+                            if (details.loadSucceeded) observationDetailsCache[packet.id] = details
                             if (!details.loadSucceeded) return@withPermit OwnTrafficMatch(TrackedKeyRelations())
                             val routeMatch = OwnTrafficClassifier.classify(details, ownPublicKeys)
                             val namedMatch = if (details.routes.any { route ->
-                                    route.path.isEmpty() || route.path.all { it.length >= 4 }
+                                    MeshPath.isTrackable(route.path)
                                 }) namedRelations(packet) else TrackedKeyRelations()
                             OwnTrafficMatch(routeMatch.relations.merge(namedMatch)).also { result ->
                                 observationMatchCache[packet.id] = ObservationMatch(
@@ -214,11 +243,15 @@ class CoreScopeRepository(
                         possibleOwnTraffic = !packet.ownTraffic && !match.relations.hasConfirmed && match.relations.possibleKeys.isNotEmpty(),
                         matchedOwnKeys = packet.matchedOwnKeys + match.relations.confirmedKeys,
                         trackedRelations = packet.trackedRelations.merge(match.relations),
+                        observationDetails = observationDetailsCache[packet.id],
                     )
                 }
             }.awaitAll()
         }
     }
+
+    private fun uniqueNamedSources(sender: String, node: String): Set<String> =
+        ownKeyNames.filterValues { it.isNotBlank() && (it == sender || it == node) }.keys.singleOrNull()?.let(::setOf).orEmpty()
 
     private fun namedRelations(packet: LivePacket): TrackedKeyRelations {
         val decoded = packet.decodedJson.takeIf { it.startsWith("{") }
@@ -227,8 +260,8 @@ class CoreScopeRepository(
         val nodeName = decoded.optString("name").trim().lowercase()
         val text = decoded.optString("text")
         return TrackedKeyRelations(
-            sourceKeys = ownKeyNames.filterValues { it == sender || it == nodeName }.keys,
-            replyKeys = ownKeyNames.filterValues { TrackedMention.contains(text, setOf(it)) }.keys,
+            sourceKeys = uniqueNamedSources(sender, nodeName),
+            replyKeys = ownPublicKeys.filterTo(mutableSetOf()) { key -> TrackedMention.contains(text, setOfNotNull(ownKeyNames[key], key.take(4))) },
         )
     }
 
@@ -245,16 +278,16 @@ class CoreScopeRepository(
         val observer = json.optString("observer_name").ifBlank { "Unknown observer" }
         val flags = decoded?.optJSONObject("flags")
         val role = when {
-            flags?.optBoolean("repeater") == true -> "Repeater"
-            flags?.optBoolean("chat") == true -> "Companion"
-            flags?.optBoolean("room") == true -> "Room"
-            flags?.optBoolean("sensor") == true -> "Sensor"
+            flags?.optBoolean("repeater") == true -> "REPEATER"
+            flags?.optBoolean("chat") == true -> "COMPANION"
+            flags?.optBoolean("room") == true -> "ROOM SERVER"
+            flags?.optBoolean("sensor") == true -> "SENSOR"
             else -> null
         }
         val rawPath = runCatching {
             val array = JSONArray(json.optString("path_json", "[]"))
-            buildList { for (index in 0 until array.length()) add(array.optString(index)) }.filter(String::isNotBlank)
-        }.getOrDefault(emptyList())
+            buildList { for (index in 0 until array.length()) add(array.optString(index)) }.toList()
+        }.getOrDefault(listOf("INVALID"))
         val path = if (type == 9) MeshPath.normalizeTrace(rawPath) else MeshPath.normalize(rawPath)
         val traceOwnTraffic = type == 9 && path.all { it.length >= 4 } && path.any { hop ->
             hop.length >= 4 && ownPublicKeys.any { it.startsWith(hop, ignoreCase = true) }
@@ -266,9 +299,9 @@ class CoreScopeRepository(
         val decodedSenderName = decoded?.optString("sender").orEmpty().trim().lowercase()
         val decodedNodeName = decoded?.optString("name").orEmpty().trim().lowercase()
         val messageText = decoded?.optString("text").orEmpty()
-        val namedSources = ownKeyNames.filterValues { it == decodedSenderName || it == decodedNodeName }.keys
-        val namedDestinations = ownKeyNames.filterValues { TrackedMention.contains(messageText, setOf(it)) }.keys
-        val trackablePath = path.isEmpty() || path.all { it.length >= 4 }
+        val namedSources = uniqueNamedSources(decodedSenderName, decodedNodeName)
+        val namedDestinations = ownPublicKeys.filterTo(mutableSetOf()) { key -> TrackedMention.contains(messageText, setOfNotNull(ownKeyNames[key], key.take(4))) }
+        val trackablePath = MeshPath.isTrackable(path)
         val directRelations = if (trackablePath) {
             TrackedKeyMatcher.resolvedRoute(path, emptyList(), ownPublicKeys)
                 .merge(TrackedKeyMatcher.observer(json.optString("observer_id"), ownPublicKeys))
@@ -350,7 +383,7 @@ class CoreScopeRepository(
 internal object OwnTrafficClassifier {
     fun classify(details: PacketObservationDetails, ownPublicKeys: Set<String>): OwnTrafficMatch {
         val relations = details.routes.fold(TrackedKeyRelations()) { result, route ->
-            if (route.path.any { it.length < 4 }) result
+            if (!MeshPath.isTrackable(route.path)) result
             else result.merge(TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, ownPublicKeys))
                 .merge(TrackedKeyMatcher.observer(route.observerPublicKey, ownPublicKeys))
         }
@@ -374,7 +407,7 @@ internal object TrackedMention {
         val normalized = text.lowercase()
         return nodeNames.any { rawName ->
             val name = rawName.trim().lowercase()
-            name.isNotBlank() && (normalized.contains("@[$name]") || normalized.contains("@$name"))
+            name.isNotBlank() && Regex("(?<![\\p{L}\\p{N}_])@(?:\\[" + Regex.escape(name) + "\\]|" + Regex.escape(name) + ")(?![\\p{L}\\p{N}_])").containsMatchIn(normalized)
         }
     }
 }

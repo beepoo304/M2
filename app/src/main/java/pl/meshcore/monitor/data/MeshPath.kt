@@ -1,11 +1,11 @@
 package pl.meshcore.monitor.data
 
 object MeshPath {
+    fun isReliableHop(value: String): Boolean = value.length in 4..64 && value.length % 2 == 0 && value.all { it.digitToIntOrNull(16) != null }
+    fun isTrackable(path: List<String>): Boolean = path.all(::isReliableHop)
     fun normalizeTrace(parts: List<String>): List<String> {
         val normalized = normalize(parts)
-        return if (normalized.isNotEmpty() && normalized.size % 2 == 0 && normalized.all { it.length == 2 })
-            normalized.chunked(2).map { it.joinToString("") }
-        else normalized
+        return normalized
     }
 
     fun normalize(parts: List<String>): List<String> {
@@ -13,17 +13,17 @@ object MeshPath {
         // packet's path-hash mode and can be 1, 2 or 3 bytes. Combining
         // adjacent one-byte entries corrupts the route and can drop its final
         // hop (for example F4, the one-byte form of a key starting with F480).
-        return parts.map { it.trim().uppercase() }.filter(String::isNotBlank)
+        return parts.map { it.trim().uppercase() }
     }
 
     fun matchingKeys(route: List<String>, publicKeys: Set<String>): Map<String, List<String>> =
-        route.distinct().mapNotNull { hop ->
+        route.filter(::isReliableHop).distinct().mapNotNull { hop ->
             val matches = publicKeys.filter { key -> key.startsWith(hop, ignoreCase = true) }
             if (matches.isEmpty()) null else hop to matches
         }.toMap()
 
     fun endingKeys(route: List<String>, publicKeys: Set<String>): List<String> {
-        val lastHop = route.lastOrNull() ?: return emptyList()
+        val lastHop = route.lastOrNull()?.takeIf(::isReliableHop) ?: return emptyList()
         return publicKeys.filter { it.startsWith(lastHop, ignoreCase = true) }
     }
 

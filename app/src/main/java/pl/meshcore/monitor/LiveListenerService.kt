@@ -77,9 +77,17 @@ class LiveListenerService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
         startForeground(NOTIFICATION_ID, notification)
-        SharedLiveRepository.start()
+        pl.meshcore.monitor.data.ApiHealthMonitor.start(this)
+        SharedLiveRepository.start(this)
         ChannelStatisticsEngine.start(this)
         AppPacketStatisticsEngine.start(this)
+        pl.meshcore.monitor.ui.OwnTrafficLogEngine.start(this)
+        scope.launch {
+            while (true) {
+                pl.meshcore.monitor.data.MapNodeRepository.load()
+                delay(60_000)
+            }
+        }
         val channelStore = SecureChannelStore(this)
         scope.launch {
             SharedLiveRepository.state.collect { state ->
@@ -118,6 +126,7 @@ class LiveListenerService : Service() {
         if (intent?.action == ACTION_CLOSE_APP) {
             scope.launch {
                 NetworkModule.client.dispatcher.cancelAll()
+                pl.meshcore.monitor.data.ApiHealthMonitor.stop()
                 SharedLiveRepository.stop()
                 ChannelStatisticsEngine.stop()
                 AppPacketStatisticsEngine.stop()

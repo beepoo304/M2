@@ -2,7 +2,7 @@ package pl.meshcore.monitor.data
 
 enum class TrackedRelationType(val label: String) {
     SOURCE("SOURCE"),
-    ROUTE_ENDS_AT("ROUTE ENDS AT"),
+    ROUTE_ENDS_AT("LAST RECORDED HOP"),
     IN_ROUTE("IN ROUTE"),
     REPORTED_BY("REPORTED BY"),
 }
@@ -44,14 +44,14 @@ data class TrackedKeyRelations(
 object TrackedKeyMatcher {
     fun exactFull(value: String?, savedKeys: Set<String>): Set<String> {
         val normalized = value.orEmpty().trim()
-        if (normalized.length != 64) return emptySet()
+        if (normalized.length != 64 || !MeshPath.isReliableHop(normalized)) return emptySet()
         return savedKeys.filterTo(mutableSetOf()) { it.equals(normalized, true) }
     }
 
     /** A 2-byte or longer hash is reliable only when it resolves to one saved key. */
     fun reliableHash(value: String?, savedKeys: Set<String>): Set<String> {
         val normalized = value.orEmpty().trim()
-        if (normalized.length < 4 || normalized.length % 2 != 0) return emptySet()
+        if (!MeshPath.isReliableHop(normalized)) return emptySet()
         return savedKeys.filter { it.startsWith(normalized, true) }.singleOrNull()?.let(::setOf).orEmpty()
     }
 
@@ -65,12 +65,12 @@ object TrackedKeyMatcher {
         val routeEnds = mutableSetOf<String>()
         val possible = mutableSetOf<String>()
         path.forEachIndexed { index, hop ->
-            if (hop.length < 4) return@forEachIndexed
+            if (!MeshPath.isReliableHop(hop)) return@forEachIndexed
             val resolved = resolvedPath.getOrNull(index)
-            val fullMatch = exactFull(resolved, savedKeys)
+            val fullMatch = if (resolved?.startsWith(hop, true) == true) exactFull(resolved, savedKeys) else emptySet()
             // A resolver can suggest a full key for a 1-byte path entry, but the
             // packet itself still does not contain enough bytes to confirm it.
-            val matches = fullMatch.ifEmpty { reliableHash(hop, savedKeys) }
+            val matches = if (!resolved.isNullOrBlank()) fullMatch else reliableHash(hop, savedKeys)
             if (index == path.lastIndex) routeEnds += matches else inRoute += matches
         }
         return TrackedKeyRelations(routeKeys = inRoute, routeEndKeys = routeEnds,

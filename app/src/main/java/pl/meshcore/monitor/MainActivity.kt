@@ -8,6 +8,11 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import pl.meshcore.monitor.data.NetworkModule
@@ -20,6 +25,7 @@ import pl.meshcore.monitor.data.ChannelStatisticsEngine
 import pl.meshcore.monitor.data.TrafficRefreshPolicy
 import pl.meshcore.monitor.data.AppPacketStatisticsEngine
 import pl.meshcore.monitor.ui.MeshCoreApp
+import pl.meshcore.monitor.ui.SignalFlightIntro
 import pl.meshcore.monitor.ui.theme.MeshCoreTheme
 
 class MainActivity : ComponentActivity() {
@@ -36,6 +42,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 31) {
+            // Remove the platform exit overlay as soon as our first frame is ready.
+            splashScreen.setOnExitAnimationListener { it.remove() }
+        }
         val prefs = getSharedPreferences("connection_settings", MODE_PRIVATE)
         val keys = prefs.getStringSet("own_public_keys", DEFAULT_OWN_PUBLIC_KEYS) ?: DEFAULT_OWN_PUBLIC_KEYS
         ConnectionConfigBus.update(ConnectionConfig(
@@ -54,7 +64,11 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             MeshCoreTheme {
-                MeshCoreApp(onCloseApp = ::closeApp)
+                var introFinished by rememberSaveable { mutableStateOf(savedInstanceState != null) }
+                Box(Modifier.fillMaxSize()) {
+                    MeshCoreApp(onCloseApp = ::closeApp)
+                    if (!introFinished) SignalFlightIntro(onFinished = { introFinished = true })
+                }
             }
         }
     }

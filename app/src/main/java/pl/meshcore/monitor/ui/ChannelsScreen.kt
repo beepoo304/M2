@@ -38,6 +38,8 @@ import pl.meshcore.monitor.data.ChannelStatEvent
 import pl.meshcore.monitor.data.AppPacketStatisticsEngine
 import java.time.Instant
 
+private enum class AddChannelMode { PUBLIC, PRIVATE }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun ChannelsScreen(
     modifier: Modifier,
@@ -46,7 +48,11 @@ import java.time.Instant
     vm: ChannelsViewModel = viewModel(),
 ) {
     val context = LocalContext.current; val state by vm.state.collectAsState()
-    var add by remember { mutableStateOf(false) }; var input by rememberSaveable { mutableStateOf("") }; var invalid by remember { mutableStateOf(false) }
+    var add by remember { mutableStateOf(false) }
+    var addMode by remember { mutableStateOf<AddChannelMode?>(null) }
+    var namedPublic by remember { mutableStateOf(false) }
+    var input by rememberSaveable { mutableStateOf("") }
+    var invalid by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ChannelSummary?>(null) }
     var renameText by rememberSaveable { mutableStateOf("") }
     var statistics by remember { mutableStateOf(false) }
@@ -67,23 +73,122 @@ import java.time.Instant
         runCatching { InputImage.fromFilePath(context, it) }.onSuccess { image ->
             BarcodeScanning.getClient().process(image).addOnSuccessListener { codes ->
                 val value = codes.firstNotNullOfOrNull { code -> code.rawValue }
-                if (value != null && vm.addCustom(value)) { input = ""; add = false } else invalid = true
+                if (value != null && vm.addCustom(value)) {
+                    input = ""; add = false; addMode = null; namedPublic = false
+                } else invalid = true
             }.addOnFailureListener { invalid = true }
         }
     } }
-    if (add) AlertDialog(onDismissRequest = { add = false }, title = { Text("Add channel") }, text = {
-        Column { Text("Enter public, #name or a 16/32-byte channel key.")
-            OutlinedTextField(input, { input = it; invalid = false }, label = { Text("public, #name or key") }, isError = invalid, singleLine = true)
-            Row { TextButton(onClick = {
+    if (add) AlertDialog(onDismissRequest = { add = false; addMode = null; namedPublic = false }, title = {
+        Text(when (addMode) {
+            AddChannelMode.PUBLIC -> "Public channel"
+            AddChannelMode.PRIVATE -> "Private channel"
+            null -> "Add channel"
+        })
+    }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            when (addMode) {
+                null -> {
+                    Text("What kind of channel do you want to add?")
+                    OutlinedButton(
+                        onClick = { addMode = AddChannelMode.PUBLIC; namedPublic = false; input = ""; invalid = false },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Outlined.Tag, null)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Public channel", fontWeight = FontWeight.Bold)
+                            Text("I know its name, for example #test", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { addMode = AddChannelMode.PRIVATE; input = ""; invalid = false },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Outlined.Key, null)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Private channel", fontWeight = FontWeight.Bold)
+                            Text("I have a channel key or QR code", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                AddChannelMode.PUBLIC -> {
+                    if (!namedPublic) {
+                        Text("Which public channel do you want to add?")
+                        OutlinedButton(
+                            onClick = {
+                                if (vm.addCustom("public")) { input = ""; add = false; addMode = null }
+                                else invalid = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Outlined.Public, null)
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Main public channel", fontWeight = FontWeight.Bold)
+                                Text("The standard MeshCore public channel", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { namedPublic = true; input = ""; invalid = false },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Outlined.Tag, null)
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Named public channel", fontWeight = FontWeight.Bold)
+                                Text("For example #test or #bot", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    } else {
+                        Text("Enter the channel name")
+                        OutlinedTextField(
+                            value = input,
+                            onValueChange = { input = it.removePrefix("#"); invalid = false },
+                            label = { Text("Channel name") },
+                            prefix = { Text("#") },
+                            supportingText = { if (invalid) Text("Enter a channel name") else Text("Example: #test") },
+                            isError = invalid,
+                            singleLine = true,
+                        )
+                    }
+                }
+                AddChannelMode.PRIVATE -> {
+                    Text("Scan QR or paste the channel key")
+                    OutlinedTextField(
+                        input, { input = it.trim(); invalid = false },
+                        label = { Text("Channel key") },
+                        supportingText = { if (invalid) Text("This key is not valid") },
+                        isError = invalid,
+                        singleLine = true,
+                    )
+                    Row { TextButton(onClick = {
                 val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
                 GmsBarcodeScanning.getClient(context, options).startScan().addOnSuccessListener { code ->
-                    if (code.rawValue?.let(vm::addCustom) == true) { input = ""; add = false } else invalid = true
+                    if (code.rawValue?.let(vm::addCustom) == true) { input = ""; add = false; addMode = null; namedPublic = false } else invalid = true
                 }.addOnFailureListener { invalid = true }
             }) { Icon(Icons.Outlined.CameraAlt, null); Text(" Scan QR") }
                 TextButton({ gallery.launch("image/*") }) { Icon(Icons.Outlined.Image, null); Text(" Open image") } }
+                }
+            }
         }
-    }, confirmButton = { TextButton({ if (vm.addCustom(input)) { input = ""; add = false } else invalid = true }) { Text("Add") } },
-        dismissButton = { TextButton({ add = false }) { Text("Cancel") } })
+    }, confirmButton = {
+        addMode?.takeIf { it == AddChannelMode.PRIVATE || namedPublic }?.let { mode ->
+            TextButton({
+                val value = if (mode == AddChannelMode.PUBLIC) "#${input.trim().removePrefix("#")}" else input.trim()
+                if (vm.addCustom(value)) { input = ""; add = false; addMode = null; namedPublic = false } else invalid = true
+            }) { Text("Add channel") }
+        }
+    }, dismissButton = {
+        TextButton({
+            when {
+                addMode == null -> add = false
+                addMode == AddChannelMode.PUBLIC && namedPublic -> { namedPublic = false; input = ""; invalid = false }
+                else -> { addMode = null; namedPublic = false; input = ""; invalid = false }
+            }
+        }) { Text(if (addMode == null) "Cancel" else "Back") }
+    })
     renameTarget?.let { channel ->
         AlertDialog(
             onDismissRequest = { renameTarget = null },
@@ -138,8 +243,8 @@ import java.time.Instant
                 }
             } }; return
         }
-        Row(Modifier.fillMaxWidth().clickable { add = true }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Add, "Add channel", tint = MaterialTheme.colorScheme.primary); Text("  Add by #name or key", color = MaterialTheme.colorScheme.primary)
+        Row(Modifier.fillMaxWidth().clickable { add = true; addMode = null; namedPublic = false; input = ""; invalid = false }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Add, "Add channel", tint = MaterialTheme.colorScheme.primary); Text("  Add channel", color = MaterialTheme.colorScheme.primary)
         }; HorizontalDivider()
         if (state.loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else if (state.myChannels.isEmpty()) Box(Modifier.fillMaxSize().padding(24.dp)) { Text("Channels you add will appear here") }

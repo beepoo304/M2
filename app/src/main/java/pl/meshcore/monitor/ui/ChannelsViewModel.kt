@@ -79,7 +79,7 @@ class ChannelsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun refresh() { _state.value.selected?.let(::open) }
-    fun refreshAll() = loadChannelPreviews(showRefreshing = true)
+    fun refreshAll() = loadChannelPreviews(showRefreshing = true, packetLimit = ChannelRepository.FULL_PACKET_LIMIT)
     fun clearSelectedMessages() {
         val selected = _state.value.selected ?: return
         val channel = saved.firstOrNull { it.hash.equals(selected.hash, true) && it.name == selected.name } ?: return
@@ -108,8 +108,8 @@ class ChannelsViewModel(application: Application) : AndroidViewModel(application
 
     fun addCustom(value: String): Boolean {
         val channel = repository.parseChannel(value) ?: return false
-        saved = (listOf(channel) + saved.filterNot { it.hash.equals(channel.hash, true) }).take(MAX_CHANNELS)
-        persist()
+        saved = (listOf(channel) + saved.filterNot { ChannelRepository.sameIdentity(it, channel) }).take(MAX_CHANNELS)
+        persist(packetLimit = ChannelRepository.FULL_PACKET_LIMIT)
         return true
     }
 
@@ -127,11 +127,11 @@ class ChannelsViewModel(application: Application) : AndroidViewModel(application
         return true
     }
 
-    private fun persist() {
+    private fun persist(packetLimit: Int = ChannelRepository.START_PACKET_LIMIT) {
         repository.save(saved)
         ConnectionConfigBus.update(ConnectionConfigBus.config.value.copy(savedChannels = saved))
         _state.value = _state.value.copy(myChannels = summariesWithCachedPreviews())
-        loadChannelPreviews()
+        loadChannelPreviews(packetLimit = packetLimit)
     }
 
     private fun summariesWithCachedPreviews(): List<ChannelSummary> = saved.map { channel ->
@@ -142,14 +142,16 @@ class ChannelsViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
-    private fun loadChannelPreviews(showRefreshing: Boolean = false) {
+    private fun loadChannelPreviews(
+        showRefreshing: Boolean = false,
+        packetLimit: Int = ChannelRepository.START_PACKET_LIMIT,
+    ) {
         previewLoadJob?.cancel()
         _state.value = _state.value.copy(myChannels = summariesWithCachedPreviews())
         if (showRefreshing) _state.value = _state.value.copy(refreshingChannels = true)
         previewLoadJob = viewModelScope.launch {
-            saved.forEach { channel ->
-                runCatching { repository.messages(channel) }
-                    .onSuccess { updatePreview(channel, it) }
+            runCatching { repository.messages(saved, packetLimit) }.onSuccess { refreshed ->
+                saved.forEach { channel -> refreshed[channel]?.let { updatePreview(channel, it) } }
             }
             _state.value = _state.value.copy(refreshingChannels = false)
         }

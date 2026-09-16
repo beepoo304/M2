@@ -69,8 +69,9 @@ object ChannelStatisticsEngine {
         val cutoff = System.currentTimeMillis() - DAY_MS
         val fresh = buildList {
             val repository = ChannelRepository(appContext)
+            val messagesByChannel = repository.messages(channels, ChannelRepository.START_PACKET_LIMIT)
             channels.forEach { channel ->
-                repository.messages(channel).forEach { message ->
+                messagesByChannel[channel].orEmpty().forEach { message ->
                     if (message.epochMillis() < cutoff) return@forEach
                     devices.forEach { (key, name) ->
                         val sender = message.sender.trim()

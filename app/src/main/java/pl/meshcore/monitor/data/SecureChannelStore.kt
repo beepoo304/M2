@@ -33,10 +33,11 @@ class SecureChannelStore(context: Context) {
         val array = JSONArray(plain)
         buildList {
             for (i in 0 until array.length()) array.optJSONObject(i)?.let {
-                val name = it.optString("name")
-                val legacyPrivate = !name.startsWith("#") && !name.equals("public", true) && it.optString("secret").isNotBlank()
-                add(SavedChannel(name, it.optString("hash"), it.optString("secret"),
-                    it.optBoolean("isPrivate", legacyPrivate)))
+                val storedName = it.optString("name")
+                val secret = it.optString("secret")
+                val isPrivate = !storedName.startsWith("#") && !storedName.equals("public", true) && secret.isNotBlank()
+                val name = if (storedName.equals("Unnamed channel", true)) "Private channel" else storedName
+                add(SavedChannel(name, it.optString("hash"), secret, isPrivate))
             }
         }
     }.getOrDefault(emptyList())

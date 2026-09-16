@@ -37,18 +37,31 @@ class ChannelRepository(context: Context) {
         }
     }
 
-    suspend fun messages(channel: SavedChannel): List<ChannelMessage> = withContext(Dispatchers.IO) {
-        val cached = store.loadMessages(channel)
-        runCatching {
-            // Named/key channels must be verified with their secret. The server's
-            // name feed can contain packets sharing the same one-byte channel hash.
-            val remote = if (channel.secret.isBlank()) loadRemoteMessages(channel.name) else emptyList()
-            val local = if (channel.secret.isNotBlank()) {
-                ChannelCrypto.decodeHex(channel.secret)?.let { decryptRecentPackets(channel, it) }.orEmpty()
-            } else emptyList()
-            val fresh = (remote + local).distinctBy { it.id }
-            sortMessages(store.mergeMessages(channel, fresh))
-        }.getOrDefault(sortMessages(cached))
+    suspend fun messages(channel: SavedChannel, packetLimit: Int = START_PACKET_LIMIT): List<ChannelMessage> =
+        messages(listOf(channel), packetLimit)[channel] ?: cachedMessages(channel)
+
+    suspend fun messages(
+        channels: List<SavedChannel>,
+        packetLimit: Int = START_PACKET_LIMIT,
+    ): Map<SavedChannel, List<ChannelMessage>> = withContext(Dispatchers.IO) {
+        val result = channels.associateWith { cachedMessages(it) }.toMutableMap()
+
+        channels.filter { it.secret.isBlank() }.forEach { channel ->
+            runCatching { loadRemoteMessages(channel.name) }.onSuccess { fresh ->
+                result[channel] = sortMessages(store.mergeMessages(channel, fresh))
+            }
+        }
+
+        val keyedChannels = channels.filter { it.secret.isNotBlank() }
+        if (keyedChannels.isNotEmpty()) {
+            runCatching { decryptRecentPackets(keyedChannels, packetLimit.coerceIn(1, FULL_PACKET_LIMIT)) }
+                .onSuccess { freshByChannel ->
+                    keyedChannels.forEach { channel ->
+                        result[channel] = sortMessages(store.mergeMessages(channel, freshByChannel[channel].orEmpty()))
+                    }
+                }
+        }
+        result
     }
 
     private fun parseQr(input: String): SavedChannel? {
@@ -83,34 +96,46 @@ class ChannelRepository(context: Context) {
         } }.getOrDefault(emptyList())
     }
 
-    private fun decryptRecentPackets(channel: SavedChannel, secret: ByteArray): List<ChannelMessage> {
+    private fun decryptRecentPackets(
+        channels: List<SavedChannel>,
+        packetLimit: Int,
+    ): Map<SavedChannel, List<ChannelMessage>> {
+        val secrets = channels.mapNotNull { channel ->
+            ChannelCrypto.decodeHex(channel.secret)?.let { channel to it }
+        }
+        val decodedByChannel = channels.associateWith { mutableListOf<ChannelMessage>() }
         val base = ConnectionConfigBus.config.value.coreScopeBaseUrl.trimEnd('/')
-        val request = Request.Builder().url("$base/api/packets?limit=3000&_=${System.currentTimeMillis()}")
+        val request = Request.Builder().url("$base/api/packets?limit=$packetLimit&_=${System.currentTimeMillis()}")
             .header("Cache-Control", "no-cache").build()
-        return client.newCall(request).apply { timeout().timeout(15, TimeUnit.SECONDS) }.execute().use { response ->
-            if (!response.isSuccessful) return@use emptyList()
-            val packets = JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") ?: return@use emptyList()
-            buildList { for (index in 0 until packets.length()) {
+        client.newCall(request).apply { timeout().timeout(15, TimeUnit.SECONDS) }.execute().use { response ->
+            if (!response.isSuccessful) return decodedByChannel
+            val packets = JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") ?: return decodedByChannel
+            for (index in 0 until packets.length()) {
                 val packet = packets.optJSONObject(index) ?: continue
                 if (packet.optInt("payload_type", -1) != 5) continue
                 val decoded = packet.optString("decoded_json").takeIf { it.startsWith("{") }
                     ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: continue
-                if (!decoded.optString("channelHashHex").equals(channel.hash, true)) continue
                 val mac = ChannelCrypto.decodeHex(decoded.optString("mac")) ?: continue
                 val encrypted = ChannelCrypto.decodeHex(decoded.optString("encryptedData")) ?: continue
-                if (!ChannelCrypto.validMac(secret, mac, encrypted)) continue
-                val message = ChannelCrypto.decryptMessage(secret, encrypted) ?: continue
-                add(ChannelMessage(
-                    id = packet.optString("id", "${channel.hash}-$index"), sender = message.sender,
-                    text = message.text, timestamp = message.timestamp,
-                    hops = packet.optJSONArray("_parsedPath")?.length() ?: 0,
-                    observers = listOf(packet.optString("observer_name")).filter(String::isNotBlank),
-                    repeats = packet.optInt("observation_count", 1),
-                    snr = if (packet.has("snr") && !packet.isNull("snr")) packet.optDouble("snr") else null,
-                    packetHash = packet.optString("hash"),
-                ))
-            } }
+                val packetChannelHash = decoded.optString("channelHashHex")
+                secrets.asSequence()
+                    .filter { (channel, _) -> channel.hash.equals(packetChannelHash, true) }
+                    .forEach { (channel, secret) ->
+                        if (!ChannelCrypto.validMac(secret, mac, encrypted)) return@forEach
+                        val message = ChannelCrypto.decryptMessage(secret, encrypted) ?: return@forEach
+                        decodedByChannel.getValue(channel).add(ChannelMessage(
+                            id = packet.optString("id", "${channel.hash}-$index"), sender = message.sender,
+                            text = message.text, timestamp = message.timestamp,
+                            hops = packet.optJSONArray("_parsedPath")?.length() ?: 0,
+                            observers = listOf(packet.optString("observer_name")).filter(String::isNotBlank),
+                            repeats = packet.optInt("observation_count", 1),
+                            snr = if (packet.has("snr") && !packet.isNull("snr")) packet.optDouble("snr") else null,
+                            packetHash = packet.optString("hash"),
+                        ))
+                    }
+            }
         }
+        return decodedByChannel
     }
 
     suspend fun messageDetails(message: ChannelMessage): ChannelMessageDetails = withContext(Dispatchers.IO) {
@@ -138,7 +163,13 @@ class ChannelRepository(context: Context) {
 
     companion object {
         private val HEX_SECRET = Regex("(?i)^[0-9a-f]{32}([0-9a-f]{32})?$")
+        const val START_PACKET_LIMIT = 250
+        const val FULL_PACKET_LIMIT = 1_000
         fun summary(value: SavedChannel) = ChannelSummary(value.name, value.hash, isPrivate = value.isPrivate)
+        fun sameIdentity(first: SavedChannel, second: SavedChannel): Boolean =
+            if (first.secret.isNotBlank() && second.secret.isNotBlank()) {
+                first.secret.equals(second.secret, ignoreCase = true)
+            } else first.name.equals(second.name, ignoreCase = true)
         private fun sortMessages(values: List<ChannelMessage>) = values.distinctBy { it.id }
             .sortedByDescending { runCatching { Instant.parse(it.timestamp) }.getOrElse { Instant.EPOCH } }
     }

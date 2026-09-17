@@ -590,7 +590,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
     )
     if (flying) Surface(Modifier.align(Alignment.TopStart).padding(12.dp).zIndex(50f), color = Color(0xEE15181C),
         shape = RoundedCornerShape(10.dp)) {
-        Text("N | COURSE %03d°".format(compassBearing.roundToInt()), color = Color.White,
+        Text("N %03d°".format(compassBearing.roundToInt()), color = Color.White,
             fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
     }
     }

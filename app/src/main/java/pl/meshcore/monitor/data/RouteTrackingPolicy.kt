@@ -2,7 +2,7 @@ package pl.meshcore.monitor.data
 
 /** Accept an observation, never an unrelated branch solely because its packet is related. */
 object RouteTrackingPolicy {
-    const val REVISION = 2
+    const val REVISION = 3
     fun relations(packet: LivePacket, route: ObservedRoute, keys: Set<String>): TrackedKeyRelations {
         if (!MeshPath.isTrackable(route.path)) return TrackedKeyRelations()
         return TrackedKeyMatcher.resolvedRoute(route.path, route.resolvedPath, keys)
@@ -38,9 +38,14 @@ object RouteTrackingPolicy {
         if (source != null && !path.firstOrNull().let { it != null && source.startsWith(it, true) }) {
             path.add(0, source.take(4).uppercase()); resolved.add(0, source)
         }
-        // The observer identity is explicit reception evidence, unlike a textual mention.
+        // A source packet with an empty RF path is still a confirmed direct route
+        // from that source to the API-reported observer. Preserve that zero-hop
+        // link instead of discarding the otherwise single-point map event.
         val observer = route.observerPublicKey
-        if (TrackedKeyMatcher.exactFull(observer, setOf(key)).isNotEmpty() &&
+        val selectedIsSource = relation.sourceKeys.any { it.equals(key, true) }
+        val observerIsSelected = TrackedKeyMatcher.exactFull(observer, setOf(key)).isNotEmpty()
+        val observerIsExplicit = observer.length == 64 && MeshPath.isReliableHop(observer)
+        if ((observerIsSelected || selectedIsSource && observerIsExplicit) &&
             !path.lastOrNull().let { it != null && observer.startsWith(it, true) }) {
             path += observer.take(4).uppercase(); resolved += observer
         }

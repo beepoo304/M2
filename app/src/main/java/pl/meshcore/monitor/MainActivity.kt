@@ -29,6 +29,11 @@ import pl.meshcore.monitor.ui.SignalFlightIntro
 import pl.meshcore.monitor.ui.theme.MeshCoreTheme
 
 class MainActivity : ComponentActivity() {
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
     override fun onStart() {
         super.onStart()
         TrafficRefreshPolicy.appVisible = true

@@ -88,4 +88,14 @@ class RouteTrackingPolicyTest {
         assertEquals(key, event.resolvedPath.first())
         assertEquals("0652", event.path.first())
     }
+
+    @Test fun sourceAdvertWithEmptyPathUsesExplicitObserverAsDirectEndpoint() {
+        val observer = "F480" + "0".repeat(60)
+        val packet = packet(TrackedKeyRelations(sourceKeys = setOf(key)))
+        val direct = ObservedRoute(emptyList(), observerName = "Observer", observerPublicKey = observer)
+        val event = RouteTrackingPolicy.event(packet, direct, setOf(key), key, MapTrackingMode.STARTS_AT_KEY)!!
+        assertEquals(listOf("0652", "F480"), event.path)
+        assertEquals(listOf(key, observer), event.resolvedPath)
+        assertTrue(MapRouteScope.includes(event, key))
+    }
 }

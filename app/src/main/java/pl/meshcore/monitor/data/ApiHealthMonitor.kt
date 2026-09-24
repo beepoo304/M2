@@ -59,5 +59,13 @@ object ApiHealthMonitor {
             }
         }
     }
+
+    @Synchronized fun clear(context: Context, baseUrl: String) {
+        val base = baseUrl.trim().trimEnd('/')
+        ApiHealthLogStore(context.applicationContext).save(base, emptyList())
+        val current = mutableState.value[base]
+        mutableState.value = mutableState.value + (base to BrokerHealth(current?.online, emptyList()))
+    }
+
     suspend fun stop() { job?.cancelAndJoin(); job = null }
 }

@@ -31,9 +31,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 class LiveListenerService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val closing = AtomicBoolean(false)
     private val cachedPacketIds = LinkedHashSet<String>()
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -123,7 +125,7 @@ class LiveListenerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_CLOSE_APP) {
+        if (intent?.action == ACTION_CLOSE_APP && closing.compareAndSet(false, true)) {
             scope.launch {
                 NetworkModule.client.dispatcher.cancelAll()
                 pl.meshcore.monitor.data.ApiHealthMonitor.stop()

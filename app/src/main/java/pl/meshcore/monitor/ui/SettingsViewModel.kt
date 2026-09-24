@@ -27,11 +27,28 @@ import java.time.Instant
 import kotlinx.coroutines.Job
 
 data class DeviceNeighbour(val hash: String, val name: String, val count: Int)
+data class DeviceRptInfo(
+    val role: String = "",
+    val lastHeard: String = "",
+    val usefulness: Double? = null,
+    val usefulnessGrade: String? = null,
+    val trafficShare: Double? = null,
+    val bridgeScore: Double? = null,
+    val coverage: Double? = null,
+    val redundancy: Double? = null,
+    val firstSeen: String = "",
+    val totalPackets: Int? = null,
+    val totalObservations: Int? = null,
+    val packetsToday: Int? = null,
+    val averageSnr: Double? = null,
+    val averageHops: Double? = null,
+)
 data class DeviceNeighboursState(
     val deviceKey: String = "",
     val deviceName: String = "",
     val sourceApi: String = "",
     val updatedAtMs: Long = 0L,
+    val rptInfo: DeviceRptInfo? = null,
     val neighbours: List<DeviceNeighbour> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
@@ -165,6 +182,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         } }
     }
 
+    fun resetApiLog() {
+        val base = ConnectionConfigBus.config.value.coreScopeBaseUrl
+        pl.meshcore.monitor.data.ApiHealthMonitor.clear(app, base)
+        _apiHealthLog.value = emptyList()
+    }
+
     fun addDevice(value: String): Boolean {
         val key = value.trim().lowercase()
         if (!key.matches(Regex("[0-9a-f]{64}"))) return false
@@ -227,7 +250,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _neighbours.value = cached ?: DeviceNeighboursState(
             deviceKey = device.publicKey, deviceName = device.name, sourceApi = api,
         )
-        if (cached == null || System.currentTimeMillis() - cached.updatedAtMs >= NEIGHBOUR_REFRESH_INTERVAL_MS) {
+        if (cached == null || cached.rptInfo == null ||
+            System.currentTimeMillis() - cached.updatedAtMs >= NEIGHBOUR_REFRESH_INTERVAL_MS) {
             refreshNeighbours()
         }
         neighbourRefreshJob = viewModelScope.launch {
@@ -265,11 +289,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private fun loadNeighbours(api: String, key: String, fallbackName: String): Result<DeviceNeighboursState> = runCatching {
         val detailRequest = Request.Builder().url("$api/api/nodes/${key.lowercase()}").build()
+        val healthRequest = Request.Builder().url("$api/api/nodes/${key.lowercase()}/health").build()
         val nodeRequest = Request.Builder().url("$api/api/nodes?limit=3000").build()
         val detail = client.newCall(detailRequest).execute().use { response ->
             if (!response.isSuccessful) error("API returned HTTP ${response.code}")
             JSONObject(response.body?.string().orEmpty())
         }
+        val health = runCatching {
+            client.newCall(healthRequest).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                JSONObject(response.body?.string().orEmpty())
+            }
+        }.getOrNull()
         val nodes = client.newCall(nodeRequest).execute().use { response ->
             if (!response.isSuccessful) error("Node list returned HTTP ${response.code}")
             JSONObject(response.body?.string().orEmpty()).optJSONArray("nodes") ?: JSONArray()
@@ -295,11 +326,30 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val candidates = nodeByHash[hash].orEmpty()
             DeviceNeighbour(hash, candidates.singleOrNull()?.second ?: if (candidates.isEmpty()) "Unknown RPT" else "Ambiguous RPT", count)
         }.sortedByDescending(DeviceNeighbour::count)
+        val node = detail.optJSONObject("node") ?: JSONObject()
+        val stats = health?.optJSONObject("stats")
+        val rptInfo = DeviceRptInfo(
+            role = node.optString("role"),
+            lastHeard = node.optString("last_heard").ifBlank { node.optString("last_seen") },
+            usefulness = node.optionalDouble("usefulness_score"),
+            usefulnessGrade = node.optString("usefulness_grade").ifBlank { null },
+            trafficShare = node.optionalDouble("traffic_share_score"),
+            bridgeScore = node.optionalDouble("bridge_score"),
+            coverage = node.optionalDouble("coverage_score"),
+            redundancy = node.optionalDouble("redundancy_score"),
+            firstSeen = node.optString("first_seen"),
+            totalPackets = stats?.optionalInt("totalPackets"),
+            totalObservations = stats?.optionalInt("totalObservations"),
+            packetsToday = stats?.optionalInt("packetsToday"),
+            averageSnr = stats?.optionalDouble("avgSnr"),
+            averageHops = stats?.optionalDouble("avgHops"),
+        )
         DeviceNeighboursState(
             deviceKey = key,
-            deviceName = detail.optJSONObject("node")?.optString("name").orEmpty().ifBlank { fallbackName },
+            deviceName = node.optString("name").ifBlank { fallbackName },
             sourceApi = api,
             updatedAtMs = System.currentTimeMillis(),
+            rptInfo = rptInfo,
             neighbours = neighbours,
         )
     }
@@ -311,6 +361,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.edit().putString(neighbourCacheKey(value.sourceApi, value.deviceKey), JSONObject().apply {
             put("deviceKey", value.deviceKey); put("deviceName", value.deviceName)
             put("sourceApi", value.sourceApi); put("updatedAtMs", value.updatedAtMs)
+            value.rptInfo?.let { info -> put("rptInfo", JSONObject().apply {
+                put("role", info.role); put("lastHeard", info.lastHeard)
+                putNullable("usefulness", info.usefulness); putNullable("usefulnessGrade", info.usefulnessGrade)
+                putNullable("trafficShare", info.trafficShare); putNullable("bridgeScore", info.bridgeScore)
+                putNullable("coverage", info.coverage); putNullable("redundancy", info.redundancy)
+                put("firstSeen", info.firstSeen); putNullable("totalPackets", info.totalPackets)
+                putNullable("totalObservations", info.totalObservations); putNullable("packetsToday", info.packetsToday)
+                putNullable("averageSnr", info.averageSnr); putNullable("averageHops", info.averageHops)
+            }) }
             put("neighbours", JSONArray().apply { value.neighbours.forEach { neighbour -> put(JSONObject().apply {
                 put("hash", neighbour.hash); put("name", neighbour.name); put("count", neighbour.count)
             }) } })
@@ -320,14 +379,34 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private fun loadNeighboursCache(api: String, key: String): DeviceNeighboursState? = runCatching {
         val root = JSONObject(prefs.getString(neighbourCacheKey(api, key), null) ?: return null)
         val values = root.optJSONArray("neighbours") ?: JSONArray()
+        val info = root.optJSONObject("rptInfo")?.let { item -> DeviceRptInfo(
+            role = item.optString("role"), lastHeard = item.optString("lastHeard"),
+            usefulness = item.optionalDouble("usefulness"), usefulnessGrade = item.optString("usefulnessGrade").ifBlank { null },
+            trafficShare = item.optionalDouble("trafficShare"), bridgeScore = item.optionalDouble("bridgeScore"),
+            coverage = item.optionalDouble("coverage"), redundancy = item.optionalDouble("redundancy"),
+            firstSeen = item.optString("firstSeen"), totalPackets = item.optionalInt("totalPackets"),
+            totalObservations = item.optionalInt("totalObservations"), packetsToday = item.optionalInt("packetsToday"),
+            averageSnr = item.optionalDouble("averageSnr"), averageHops = item.optionalDouble("averageHops"),
+        ) }
         DeviceNeighboursState(
             deviceKey = root.optString("deviceKey", key), deviceName = root.optString("deviceName"),
             sourceApi = root.optString("sourceApi", api), updatedAtMs = root.optLong("updatedAtMs"),
+            rptInfo = info,
             neighbours = buildList { for (index in 0 until values.length()) values.optJSONObject(index)?.let { item ->
                 add(DeviceNeighbour(item.optString("hash"), item.optString("name"), item.optInt("count")))
             } },
         )
     }.getOrNull()
+
+    private fun JSONObject.optionalDouble(name: String): Double? =
+        if (has(name) && !isNull(name)) optDouble(name).takeUnless(Double::isNaN) else null
+
+    private fun JSONObject.optionalInt(name: String): Int? =
+        if (has(name) && !isNull(name)) optInt(name) else null
+
+    private fun JSONObject.putNullable(name: String, value: Any?) {
+        if (value != null) put(name, value)
+    }
 
     private fun persistDeviceKeys() {
         val keys = _devices.value.map { it.publicKey }.toSet()

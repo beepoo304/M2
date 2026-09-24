@@ -19,12 +19,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -59,7 +63,7 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
             pendingExportLocation = it.toString()
         }
     }
-    if (showApiLog) ApiLogDialog(apiOnline, apiLog) { showApiLog = false }
+    if (showApiLog) ApiLogDialog(apiOnline, apiLog, vm::resetApiLog) { showApiLog = false }
     neighbours?.let { DeviceNeighboursDialog(it, vm::refreshNeighbours, vm::closeNeighbours) }
     if (addApi) AlertDialog(
         onDismissRequest = { addApi = false },
@@ -208,27 +212,37 @@ import pl.meshcore.monitor.data.ConnectionConfigBus
 @Composable
 private fun DeviceNeighboursDialog(state: DeviceNeighboursState, refresh: () -> Unit, close: () -> Unit) {
     AlertDialog(
+        modifier = Modifier.fillMaxWidth(0.96f),
+        properties = DialogProperties(usePlatformDefaultWidth = false),
         onDismissRequest = close,
         title = { Column {
             Text(state.deviceName, maxLines = 1)
             Text(state.deviceKey.take(4).uppercase(), fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         } },
-        text = { Column {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                Text("NEIGHBOURS (${state.neighbours.size})", fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f))
-                IconButton(refresh, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "Refresh neighbours") }
+        text = { LazyColumn(Modifier.heightIn(max = 560.dp)) {
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("RPT INFO", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    IconButton(refresh, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "Refresh RPT information") }
+                }
+                Text("Source: ${state.sourceApi}", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                if (state.updatedAtMs > 0L) Text("Updated: ${apiLogTime(state.updatedAtMs)}",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                state.rptInfo?.let { RptInfoBlock(it) }
+                if (state.rptInfo == null && !state.loading && state.error == null) {
+                    Text("RPT information unavailable", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                }
+                HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                Text("NEIGHBOURS (${state.neighbours.size})", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
             }
-            Text("Source: ${state.sourceApi}", style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
-            if (state.updatedAtMs > 0L) Text("Updated: ${apiLogTime(state.updatedAtMs)}",
-                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
-            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            if (state.neighbours.isEmpty() && !state.loading) Text("No neighbours found")
-            else LazyColumn(Modifier.heightIn(max = 420.dp)) {
+            if (state.neighbours.isEmpty() && !state.loading) item { Text("No neighbours found") }
+            else {
                 items(state.neighbours, key = { it.hash }) { neighbour ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                         Text("${neighbour.hash} · ${neighbour.name}", modifier = Modifier.weight(1f),
@@ -245,7 +259,192 @@ private fun DeviceNeighboursDialog(state: DeviceNeighboursState, refresh: () -> 
 }
 
 @Composable
-private fun ApiLogDialog(online: Boolean?, entries: List<ApiHealthEntry>, close: () -> Unit) {
+private fun RptInfoBlock(info: DeviceRptInfo) {
+    val context = LocalContext.current
+    val language = remember {
+        context.getSharedPreferences("guide_settings", android.content.Context.MODE_PRIVATE)
+            .getString("language", "PL").orEmpty()
+    }
+    val help = rptMetricHelp[language] ?: rptMetricHelp.getValue("EN")
+    var explanation by remember { mutableStateOf<Pair<String, String>?>(null) }
+    explanation?.let { (title, text) ->
+        AlertDialog(
+            onDismissRequest = { explanation = null },
+            title = { Text(title) },
+            text = { Text(text, style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = { TextButton({ explanation = null }) { Text(help.close) } },
+        )
+    }
+    val active = rptIsActive(info.lastHeard)
+    OutlinedCard(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            RptInfoRow("Status", if (active) "● Active  ·  ${rptRelativeAge(info.lastHeard)}" else "● Inactive  ·  ${rptRelativeAge(info.lastHeard)}",
+                if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+            RptInfoDivider()
+            RptInfoRow("Last heard", rptRelativeAge(info.lastHeard))
+            RptInfoDivider()
+            RptMetricRow("Usefulness", info.usefulness,
+                info.usefulnessGrade?.let { "$it  ${rptPercent(info.usefulness)}" } ?: rptPercent(info.usefulness),
+                help.usefulness) { explanation = "Usefulness" to it }
+            RptMetricRow("Traffic share", info.trafficShare,
+                rptPercent(info.trafficShare) + rptMetricLabel(info.trafficShare, "traffic"),
+                help.trafficShare) { explanation = "Traffic share" to it }
+            RptMetricRow("Bridge score", info.bridgeScore,
+                rptPercent(info.bridgeScore) + rptMetricLabel(info.bridgeScore, "bridge"),
+                help.bridgeScore) { explanation = "Bridge score" to it }
+            RptMetricRow("Coverage", info.coverage,
+                rptPercent(info.coverage) + rptMetricLabel(info.coverage, "coverage"),
+                help.coverage) { explanation = "Coverage" to it }
+            RptMetricRow("Redundancy", info.redundancy,
+                rptPercent(info.redundancy) + rptMetricLabel(info.redundancy, "redundancy"),
+                help.redundancy) { explanation = "Redundancy" to it }
+            RptInfoDivider()
+            if (info.firstSeen.isNotBlank()) RptInfoRow("First seen", rptDate(info.firstSeen))
+            info.totalPackets?.let { total ->
+                val seen = info.totalObservations?.let { " (seen ${it}×)" }.orEmpty()
+                RptInfoRow("Total packets", "$total$seen")
+            }
+            info.packetsToday?.let { RptInfoRow("Packets today", it.toString()) }
+            info.averageSnr?.let { RptInfoRow("Avg. SNR", "%.1f dB".format(Locale.US, it)) }
+            info.averageHops?.let { RptInfoRow("Avg. hops", "%.1f".format(Locale.US, it).removeSuffix(".0")) }
+        }
+    }
+}
+
+@Composable
+private fun RptInfoDivider() {
+    HorizontalDivider(
+        Modifier.padding(vertical = 3.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+    )
+}
+
+@Composable
+private fun RptInfoRow(label: String, value: String, valueColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurface) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(112.dp), maxLines = 1)
+        Text(value, fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold,
+            color = valueColor, textAlign = TextAlign.End, maxLines = 1,
+            modifier = Modifier.weight(1f).padding(start = 6.dp))
+    }
+}
+
+@Composable
+private fun RptMetricRow(label: String, value: Double?, text: String, explanation: String, showExplanation: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                modifier = Modifier.width(94.dp))
+            Box(
+                Modifier.width(28.dp).clickable { showExplanation(explanation) },
+                contentAlignment = Alignment.Center,
+            ) { Text("ⓘ", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
+            Text(text.ifBlank { "—" }, fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f), maxLines = 1)
+        }
+        LinearProgressIndicator(
+            progress = { rptNormalized(value).toFloat() },
+            modifier = Modifier.fillMaxWidth().height(5.dp).padding(top = 2.dp),
+        )
+    }
+}
+
+private data class RptMetricHelp(
+    val usefulness: String,
+    val trafficShare: String,
+    val bridgeScore: String,
+    val coverage: String,
+    val redundancy: String,
+    val close: String,
+)
+
+private val rptMetricHelp = mapOf(
+    "PL" to RptMetricHelp(
+        "Ogólna użyteczność RPT wyliczana na podstawie pozostałych wskaźników sieci.",
+        "Jak często RPT występuje w zarejestrowanych trasach pakietów.",
+        "W jakim stopniu RPT łączy części sieci, które bez niego byłyby od siebie oddzielone.",
+        "Jak szeroki zasięg sieci i obszaru pomaga zapewnić ten RPT.",
+        "Jak łatwo inne trasy mogą zastąpić ten RPT. Niska wartość oznacza dużą zastępowalność.", "Zamknij"),
+    "EN" to RptMetricHelp(
+        "Overall RPT usefulness calculated from the remaining network indicators.",
+        "How often the RPT appears in recorded packet routes.",
+        "How strongly the RPT connects parts of the mesh that would otherwise be separated.",
+        "How widely this RPT helps the mesh reach nodes and areas.",
+        "How easily alternative routes can replace this RPT. A low value means it is highly replaceable.", "Close"),
+    "DE" to RptMetricHelp(
+        "Gesamtnutzen des RPT, berechnet aus den übrigen Netzwerkindikatoren.",
+        "Wie häufig der RPT in aufgezeichneten Paketrouten vorkommt.",
+        "Wie stark der RPT sonst getrennte Teile des Mesh-Netzes verbindet.",
+        "Wie groß der vom RPT unterstützte Netz- und Gebietsbereich ist.",
+        "Wie leicht andere Routen diesen RPT ersetzen können. Ein niedriger Wert bedeutet hohe Ersetzbarkeit.", "Schließen"),
+    "FR" to RptMetricHelp(
+        "Utilité globale du RPT calculée à partir des autres indicateurs du réseau.",
+        "Fréquence à laquelle le RPT apparaît dans les routes de paquets enregistrées.",
+        "Capacité du RPT à relier des parties du mesh qui seraient autrement séparées.",
+        "Étendue du réseau et des zones que ce RPT aide à couvrir.",
+        "Facilité avec laquelle d’autres routes peuvent remplacer ce RPT. Une valeur faible indique qu’il est facilement remplaçable.", "Fermer"),
+    "RU" to RptMetricHelp(
+        "Общая полезность RPT, рассчитанная по остальным показателям сети.",
+        "Как часто RPT встречается в зарегистрированных маршрутах пакетов.",
+        "Насколько сильно RPT соединяет части mesh-сети, которые иначе были бы разделены.",
+        "Насколько широкую область сети помогает охватить этот RPT.",
+        "Насколько легко другие маршруты могут заменить этот RPT. Низкое значение означает высокую заменяемость.", "Закрыть"),
+    "CZ" to RptMetricHelp(
+        "Celková užitečnost RPT vypočtená z ostatních síťových ukazatelů.",
+        "Jak často se RPT objevuje v zaznamenaných trasách paketů.",
+        "Jak výrazně RPT propojuje části mesh sítě, které by jinak byly oddělené.",
+        "Jak široký dosah sítě a území tento RPT pomáhá zajistit.",
+        "Jak snadno mohou jiné trasy tento RPT nahradit. Nízká hodnota znamená vysokou nahraditelnost.", "Zavřít"),
+    "SK" to RptMetricHelp(
+        "Celková užitočnosť RPT vypočítaná z ostatných sieťových ukazovateľov.",
+        "Ako často sa RPT objavuje v zaznamenaných trasách paketov.",
+        "Ako výrazne RPT prepája časti mesh siete, ktoré by inak boli oddelené.",
+        "Aký široký dosah siete a územia tento RPT pomáha zabezpečiť.",
+        "Ako ľahko môžu iné trasy tento RPT nahradiť. Nízka hodnota znamená vysokú nahraditeľnosť.", "Zavrieť"),
+)
+
+private fun rptNormalized(value: Double?): Double = when {
+    value == null -> 0.0
+    value <= 1.0 -> value.coerceIn(0.0, 1.0)
+    else -> (value / 100.0).coerceIn(0.0, 1.0)
+}
+
+private fun rptPercent(value: Double?): String = value?.let { "%.1f%%".format(Locale.US, rptNormalized(it) * 100.0) }.orEmpty()
+
+private fun rptMetricLabel(value: Double?, type: String): String {
+    val percent = value?.let { rptNormalized(it) * 100.0 } ?: return ""
+    val label = when (type) {
+        "traffic" -> if (percent < 15) "Redundant" else if (percent < 35) "Marginal" else "Significant"
+        "bridge" -> if (percent < 5) "Marginal" else if (percent < 20) "Some role" else "Key bridge"
+        "coverage" -> if (percent < 40) "Local reach" else if (percent < 70) "Good reach" else "Wide reach"
+        else -> if (percent < 15) "Replaceable" else if (percent < 40) "Useful" else "Critical"
+    }
+    return "  $label"
+}
+
+private fun rptIsActive(timestamp: String): Boolean = runCatching {
+    System.currentTimeMillis() - java.time.Instant.parse(timestamp).toEpochMilli() <= 24 * 60 * 60_000L
+}.getOrDefault(false)
+
+private fun rptRelativeAge(timestamp: String): String = runCatching {
+    val seconds = ((System.currentTimeMillis() - java.time.Instant.parse(timestamp).toEpochMilli()) / 1_000L).coerceAtLeast(0L)
+    when {
+        seconds < 60 -> "${seconds}s ago"
+        seconds < 3_600 -> "${seconds / 60}m ago"
+        seconds < 86_400 -> "${seconds / 3_600}h ago"
+        else -> "${seconds / 86_400}d ago"
+    }
+}.getOrDefault("—")
+
+private fun rptDate(timestamp: String): String = runCatching {
+    SimpleDateFormat("dd.MM.yyyy, HH:mm:ss", Locale.getDefault()).format(Date(java.time.Instant.parse(timestamp).toEpochMilli()))
+}.getOrDefault(timestamp)
+
+@Composable
+private fun ApiLogDialog(online: Boolean?, entries: List<ApiHealthEntry>, reset: () -> Unit, close: () -> Unit) {
     AlertDialog(
         onDismissRequest = close,
         title = { Column { Text("LIVE API LOG"); Text(pl.meshcore.monitor.data.ConnectionConfigBus.config.value.coreScopeBaseUrl, style = MaterialTheme.typography.labelSmall) } },
@@ -286,6 +485,7 @@ private fun ApiLogDialog(online: Boolean?, entries: List<ApiHealthEntry>, close:
                 }
             }
         },
+        dismissButton = { TextButton(reset) { Text("RESET LOG", color = MaterialTheme.colorScheme.error) } },
         confirmButton = { TextButton(close) { Text("Close") } },
     )
 }

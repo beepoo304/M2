@@ -1,0 +1,24 @@
+M² 0.1.14 makes longest-route flights easier to read and improves recovery when a Live API broker becomes unavailable.
+
+### Clearer route flights
+
+- Previous hop and distance badges fade out smoothly instead of accumulating over the map, especially where a route returns to a nearby location.
+- The next hop badge still appears near the end of the current segment.
+- **LONGEST ROUTE** appears together with the final hop badge. After the hop badge fades, the total distance remains visible in the final overview.
+- MP4 recordings capture these changes directly from the in-app flight.
+
+### More reliable API switching
+
+- Live requests, availability checks and backup-broker probes now share the same endpoint validation and outage history.
+- Successful packet reception immediately updates broker availability and closes an ongoing outage.
+- The 30-second failure window includes time spent waiting for a failed request.
+- Packet requests have a 10-second timeout and can be cancelled promptly when switching brokers.
+- Switching to an available broker no longer triggers another request to the old broker.
+- A newly detected broker recovery wakes the listener from its three-minute retry wait.
+- Older request results cannot overwrite newer broker availability results.
+
+### Updating
+
+Download **M2-0.1.14.apk** below and install it over your existing M² installation to retain settings and saved data.
+
+The flight changes were tested on a Motorola Edge 40 and confirmed by the maintainer. All 73 unit tests passed and the Android APK build completed successfully. Automated regression tests cover failover timing, API recovery, invalid responses, request cancellation and outage-history storage.

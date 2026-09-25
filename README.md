@@ -34,7 +34,7 @@ Private channel keys are stored with Android Keystore-backed encryption. M² rea
 
 Install the newest APK from the repository's **Releases** page. Android may ask you to allow installation from your browser or file manager.
 
-**Current release: [M² 0.1.11](https://github.com/beepoo304/M2/releases/tag/v0.1.11).** Install it as an update to retain your settings, saved keys and channels.
+**Current release: [M² 0.1.14](https://github.com/beepoo304/M2/releases/tag/v0.1.14).** Install it as an update to retain your settings, saved keys and channels.
 
 ## Understand tracked routes
 
@@ -63,7 +63,7 @@ Select a saved **LIVE API** in Settings. M² keeps the latest 250 outage records
 2. Start tracking and let M² collect packet routes, or load a previously saved M² map.
 3. Tap the blue **Longest route** button.
 4. Approve Android's screen-capture prompt. M² opens the full-screen map and starts the flight from the first repeater.
-5. The blue line follows the longest unambiguous route. Hop hashes and segment distances appear during the flight, followed by the finish hop and total route distance.
+5. The blue line follows the longest unambiguous route. Only the current segment's hop badges and distance remain visible; older badges fade out. The total route distance appears together with the final hop badge. At the end, only the total distance badge remains over the map.
 6. When the flight ends, choose **YES** to save the MP4 in the export folder configured under **Settings**. The default location is `Download/M2`.
 
 Only devices with valid coordinates can be placed on the map. A known repeater without GPS keeps its original hop position and is represented by the purple shortcut; its missing distances are excluded from the total. The flight shows **NO GPS RPT** at that segment. Unrecognised intermediate hashes do not create invented links or flights across a gap.

@@ -76,7 +76,7 @@ class CoreScopeRepository(
     private val ownNodeNames: Set<String> = emptySet(),
     private val ownKeyNames: Map<String, String> = emptyMap(),
     private val savedChannels: List<SavedChannel> = emptyList(),
-    private val onBrokerUnavailable: suspend () -> Unit = {},
+    private val onBrokerUnavailable: suspend () -> Boolean = { false },
 ) : LiveSource {
     private val httpBase = baseUrl.trim().let {
         if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
@@ -90,14 +90,14 @@ class CoreScopeRepository(
     private val stopped = AtomicBoolean(false)
     private var socket: WebSocket? = null
     @Volatile private var lastSuccessfulFetch = 0L
-    private var failedSince = 0L
-    private var nextOutageCheck = 0L
+    private val failover = BrokerFailoverPolicy()
     private val refreshMutex = Mutex()
     private val observationDetailsCache = ConcurrentHashMap<String, PacketObservationDetails>()
     private val observationMatchCache = ConcurrentHashMap<String, ObservationMatch>()
 
     override suspend fun run() {
         stopped.set(false)
+        failover.observeRecovery(ApiHealthMonitor.recoveryVersion)
         refreshPackets()
         connectWebSocket()
         var lastPoll = System.currentTimeMillis()
@@ -105,15 +105,16 @@ class CoreScopeRepository(
         var failureBackoff = 0L
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
             val nowElapsed = android.os.SystemClock.elapsedRealtime()
-            val outageWaiting = nextOutageCheck > nowElapsed
-            if (failedSince > 0L && nowElapsed - failedSince >= 30_000L && !outageWaiting) {
-                nextOutageCheck = nowElapsed + 180_000L
-                onBrokerUnavailable()
-                kotlinx.coroutines.yield()
-                failureBackoff = if (refreshPackets()) 0L else 180_000L
+            if (failover.observeRecovery(ApiHealthMonitor.recoveryVersion)) failureBackoff = 0L
+            if (failover.shouldCheckAlternatives(nowElapsed)) {
+                if (onBrokerUnavailable()) return
+                val restored = refreshPackets()
+                failureBackoff = if (restored) 0L else 180_000L
+                if (!restored) failover.waitAfterFailedCheck(android.os.SystemClock.elapsedRealtime())
                 lastPoll = System.currentTimeMillis()
             }
-            if (!outageWaiting && nextOutageCheck == 0L && refreshRequested.get() && System.currentTimeMillis() - lastPoll >= TrafficRefreshPolicy.liveIntervalMs()) {
+            val outageWaiting = failover.waiting(android.os.SystemClock.elapsedRealtime())
+            if (!outageWaiting && refreshRequested.get() && System.currentTimeMillis() - lastPoll >= TrafficRefreshPolicy.liveIntervalMs()) {
                 refreshRequested.set(false)
                 failureBackoff = if (refreshPackets()) 0L else nextBackoff(failureBackoff)
                 lastPoll = System.currentTimeMillis()
@@ -169,28 +170,28 @@ class CoreScopeRepository(
     }
 
     private suspend fun refreshPackets(): Boolean = refreshMutex.withLock { withContext(Dispatchers.IO) {
+        val requestStarted = android.os.SystemClock.elapsedRealtime()
+        var endpointAvailable = false
         try {
-            val request = Request.Builder().url("$httpBase/api/packets?limit=250&_=${System.currentTimeMillis()}")
-                .header("Cache-Control", "no-cache").get().build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) error("HTTP ${response.code}")
-                val source = JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") ?: error("Missing packets array")
-                val parsedPackets = buildList {
-                    for (index in 0 until minOf(source.length(), LIVE_LOG_LIMIT)) parsePacket(source.optJSONObject(index))?.let(::add)
-                }.distinctBy { it.id }.take(LIVE_LOG_LIMIT)
-                val packets = enrichOwnTraffic(parsedPackets)
-                if (stopped.get()) return@use
-                failedSince = 0L
-                nextOutageCheck = 0L
-                lastSuccessfulFetch = System.currentTimeMillis()
-                _state.value = _state.value.copy(packets = packets, connection = ConnectionState.CONNECTED, error = null, revision = _state.value.revision + 1)
-            }
+            val source = BrokerApi.packets(httpBase, 250)
+            endpointAvailable = true
+            // Availability depends on the endpoint, not on subsequent route enrichment.
+            failover.succeeded()
+            val parsedPackets = buildList {
+                for (index in 0 until minOf(source.length(), LIVE_LOG_LIMIT)) parsePacket(source.optJSONObject(index))?.let(::add)
+            }.distinctBy { it.id }.take(LIVE_LOG_LIMIT)
+            val packets = enrichOwnTraffic(parsedPackets)
+            if (stopped.get()) return@withContext false
+            lastSuccessfulFetch = System.currentTimeMillis()
+            _state.value = _state.value.copy(packets = packets, connection = ConnectionState.CONNECTED, error = null, revision = _state.value.revision + 1)
             true
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
-            if (failedSince == 0L) failedSince = android.os.SystemClock.elapsedRealtime()
+            if (!endpointAvailable) failover.failed(requestStarted)
             Log.e("M2Live", "Packet refresh failed", error)
-            if (System.currentTimeMillis() - lastSuccessfulFetch >= 6_000) _state.value = _state.value.copy(connection = ConnectionState.ERROR, error = "Live API unavailable — retrying")
+            if (System.currentTimeMillis() - lastSuccessfulFetch >= 6_000) _state.value = _state.value.copy(
+                connection = ConnectionState.ERROR,
+                error = if (endpointAvailable) "Packet processing failed — retrying" else "Live API unavailable — retrying")
             false
         }
     }

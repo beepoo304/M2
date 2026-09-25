@@ -352,7 +352,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
     val dark = isSystemInDarkTheme()
     var pulseWide by remember { mutableStateOf(false) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
-    var animationStep by remember { mutableIntStateOf(-1) }
+    var showFlightSummary by remember(longestRoute, selectedNode, focusToken, animationToken) { mutableStateOf(false) }
     var flying by remember { mutableStateOf(false) }
     var compassBearing by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(flying) { onAnimationStateChanged(flying) }
@@ -384,7 +384,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
     LaunchedEffect(animationToken, longestRoute) {
         if (animationToken <= 0 || longestRoute.size < 2) return@LaunchedEffect
         flying = true
-        animationStep = 0
+        showFlightSummary = false
         kotlinx.coroutines.delay(180)
         val map = mapView ?: run { flying = false; return@LaunchedEffect }
         var completed = false
@@ -412,7 +412,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
         map.invalidate()
         map.controller.setZoom(longestRoute.zipWithNext().firstOrNull()?.let { (a,b) -> minOf(flightZoom(MapRouteMapper.distanceKm(a.lat,a.lon,b.lat,b.lon)),fitSegmentZoom(a,b,map.width,map.height)) } ?: 13.0)
         map.controller.setCenter(GeoPoint(longestRoute.first().lat, longestRoute.first().lon))
-        addFlightLabel(map, longestRoute.first(), "START · ${longestRoute.first().hash}")
+        var departureLabel = addFlightLabel(map, longestRoute.first(), "START · ${longestRoute.first().hash}")
         kotlinx.coroutines.delay(900)
         for (index in 1 until longestRoute.size) {
             val from = longestRoute[index - 1]; val to = longestRoute[index]
@@ -424,14 +424,14 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
 
             val middle = MapNodePoint("", (from.lat + to.lat) / 2.0, (from.lon + to.lon) / 2.0)
             val missingGps = to.missingBefore.isNotEmpty()
-            addFlightLabel(map, middle, if (missingGps) "NO GPS RPT" else "%.1f km".format(java.util.Locale.US, distance))
+            val distanceLabel = addFlightLabel(map, middle, if (missingGps) "NO GPS RPT" else "%.1f km".format(java.util.Locale.US, distance))
             val segmentLine = Polyline().apply {
                 outlinePaint.color = if (missingGps) 0xFFAB47BC.toInt() else 0xFF2196F3.toInt()
                 outlinePaint.strokeWidth = if (missingGps) 4.2f else 16.875f
             }
             val markerIndex = map.overlays.indexOfFirst { it is Marker }.let { if (it < 0) map.overlays.size else it }
             map.overlays.add(markerIndex, segmentLine)
-            var targetLabelShown = false
+            var arrivalLabel: Marker? = null
             val frameStart = withFrameNanos { it }
             var raw = 0.0
             while (raw < 1.0) {
@@ -446,12 +446,14 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                 segmentLine.setPoints(listOf(GeoPoint(from.lat, from.lon), GeoPoint(lat, lon)))
                 replyFlightOverlay.visibleSegment = index - 1
                 replyFlightOverlay.progress = t
-                if (!targetLabelShown && raw >= .80) {
+                if (arrivalLabel == null && raw >= .80) {
                     val label = if (index == longestRoute.lastIndex) "FINISH → HOP ${to.hopIndex} · ${to.hash}" else "HOP ${to.hopIndex} · ${to.hash}"
-                    addFlightLabel(map, to, label)
-                    if (index == longestRoute.lastIndex) addFlightLabel(map, to,
-                        "LONGEST ROUTE · %.2f km".format(java.util.Locale.US, totalRouteKm), anchor = 2.65f)
-                    targetLabelShown = true
+                    arrivalLabel = addFlightLabel(map, to, label)
+                    if (index == longestRoute.lastIndex) {
+                        addFlightLabel(map, to,
+                            "LONGEST ROUTE · %.2f km".format(java.util.Locale.US, totalRouteKm), anchor = 2.65f)
+                        showFlightSummary = true
+                    }
                 }
                 map.invalidate()
 
@@ -459,21 +461,18 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
             revealed += GeoPoint(to.lat, to.lon)
             segmentLine.setPoints(listOf(GeoPoint(from.lat, from.lon), GeoPoint(to.lat, to.lon)))
             replyFlightOverlay.progress = 1.0
-            animationStep = index
-            if (!targetLabelShown) {
-                val label = if (index == longestRoute.lastIndex) "FINISH → HOP ${to.hopIndex} · ${to.hash}" else "HOP ${to.hopIndex} · ${to.hash}"
-                addFlightLabel(map, to, label)
-                if (index == longestRoute.lastIndex) addFlightLabel(map, to,
-                    "LONGEST ROUTE · %.2f km".format(java.util.Locale.US, totalRouteKm), anchor = 2.65f)
-            }
-            kotlinx.coroutines.delay(1150)
+            // Only the arrival badge becomes the departure badge for the next hop.
+            // Old kilometre and hop badges must not accumulate where a route loops back.
+            fadeFlightLabels(map, listOf(departureLabel, distanceLabel))
+            departureLabel = checkNotNull(arrivalLabel)
+            kotlinx.coroutines.delay(650)
         }
         kotlinx.coroutines.delay(800)
+        fadeFlightLabels(map, listOf(departureLabel))
         map.mapOrientation = 0f
         map.zoomToBoundingBox(BoundingBox.fromGeoPoints(longestRoute.map { GeoPoint(it.lat, it.lon) }), true, 90)
         kotlinx.coroutines.delay(1500)
         kotlinx.coroutines.delay(2_500)
-        animationStep = -1
         completed = true
         flying = false
         kotlinx.coroutines.delay(250)
@@ -481,7 +480,7 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
         } finally {
             flying = false
             map.mapOrientation = 0f
-            if (!completed) animationStep = -1
+            if (!completed) showFlightSummary = false
         }
     }
     Box(modifier.clipToBounds()) {
@@ -569,21 +568,9 @@ private fun TrackingMap(edges: List<MapEdge>, selectedNode: MapNodePoint?, longe
                         }
                     }
                 }
-            if (animationStep >= 0 && longestRoute.size > 1) {
-                longestRoute.take(animationStep + 1).forEachIndexed { index, point ->
-                    map.overlays += Marker(map).apply {
-                        position = GeoPoint(point.lat, point.lon); setAnchor(Marker.ANCHOR_CENTER, 1.35f)
-                        icon = textBadge(context, if (index == 0) "START · ${point.hash}" else "HOP $index · ${point.hash}")
-                    }
-                }
-                longestRoute.zipWithNext().take(animationStep).forEach { (from, to) ->
-                    val km = MapRouteMapper.distanceKm(from.lat, from.lon, to.lat, to.lon)
-                    map.overlays += Marker(map).apply {
-                        position = GeoPoint((from.lat + to.lat) / 2.0, (from.lon + to.lon) / 2.0)
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                        icon = textBadge(context, "%.1f km".format(java.util.Locale.US, km), compact = true)
-                    }
-                }
+            if (showFlightSummary && longestRoute.size > 1) {
+                addFlightLabel(map, longestRoute.last(),
+                    "LONGEST ROUTE · %.2f km".format(java.util.Locale.US, MapRouteMapper.measuredKm(longestRoute)), anchor = 2.65f)
             }
             map.invalidate()
         },
@@ -628,11 +615,22 @@ private fun routeBearing(from: MapNodePoint, to: MapNodePoint): Float {
     return Math.toDegrees(atan2(sin(dLon) * cos(b), cos(a) * sin(b) - sin(a) * cos(b) * cos(dLon))).toFloat()
 }
 
-private fun addFlightLabel(map: MapView, point: MapNodePoint, label: String, compact: Boolean = false, anchor: Float? = null) {
-    map.overlays += Marker(map).apply {
+private fun addFlightLabel(map: MapView, point: MapNodePoint, label: String, compact: Boolean = false, anchor: Float? = null): Marker =
+    Marker(map).apply {
         position = GeoPoint(point.lat, point.lon); setAnchor(Marker.ANCHOR_CENTER, anchor ?: if (compact) .5f else 1.35f)
         icon = textBadge(map.context, label, compact)
+    }.also { map.overlays += it }
+
+private suspend fun fadeFlightLabels(map: MapView, labels: List<Marker>) {
+    val started = withFrameNanos { it }
+    var progress = 0f
+    while (progress < 1f) {
+        progress = ((withFrameNanos { it } - started) / 500_000_000f).coerceIn(0f, 1f)
+        labels.forEach { it.alpha = 1f - progress }
+        map.invalidate()
     }
+    labels.forEach { map.overlays.remove(it) }
+    map.invalidate()
 }
 
 private fun overlappingReplySegments(edges: List<MapEdge>, longestRoute: List<MapNodePoint>):

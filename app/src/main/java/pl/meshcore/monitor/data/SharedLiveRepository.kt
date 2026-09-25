@@ -53,26 +53,23 @@ object SharedLiveRepository {
         }
     }
 
-    private suspend fun switchToAvailableBroker(failedConfig: ConnectionConfig) {
-        val prefs = appContext?.getSharedPreferences("connection_settings", android.content.Context.MODE_PRIVATE) ?: return
+    private suspend fun switchToAvailableBroker(failedConfig: ConnectionConfig): Boolean {
+        val prefs = appContext?.getSharedPreferences("connection_settings", android.content.Context.MODE_PRIVATE) ?: return false
         val alternatives = prefs.getStringSet("saved_api_urls", emptySet()).orEmpty().sorted()
             .filter { it.trimEnd('/') != failedConfig.coreScopeBaseUrl.trimEnd('/') }
         for (base in alternatives) {
-            if (ConnectionConfigBus.config.value != failedConfig) return
+            if (ConnectionConfigBus.config.value != failedConfig) return true
             val available = try {
-                val request = okhttp3.Request.Builder().url("${base.trimEnd('/')}/api/packets?limit=1")
-                    .header("Cache-Control", "no-cache").build()
-                NetworkModule.client.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build()
-                    .newCall(request).execute().use { response ->
-                        response.isSuccessful && org.json.JSONObject(response.body?.string().orEmpty()).optJSONArray("packets") != null
-                    }
+                BrokerApi.packets(base, 1)
+                true
             } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled } catch (_: Exception) { false }
             if (available && ConnectionConfigBus.config.value == failedConfig) {
                 check(prefs.edit().putString("core_url", base).commit()) { "Cannot persist active broker" }
                 ConnectionConfigBus.update(failedConfig.copy(coreScopeBaseUrl = base))
-                return
+                return true
             }
         }
+        return ConnectionConfigBus.config.value != failedConfig
     }
 
     suspend fun stop() {

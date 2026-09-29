@@ -30,6 +30,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import pl.meshcore.monitor.data.*
 import org.json.JSONObject
 
+private val OneByteRouteColor = Color(0xFF78909C)
+private fun LivePacket.hasOneByteRoute(): Boolean = path.any { hop ->
+    hop.length == 2 && hop.all { it.digitToIntOrNull(16) != null }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun LiveLogScreen(modifier: Modifier, vm: LiveLogViewModel = viewModel()) {
     val gpsDirectory by MapNodeRepository.directory.collectAsState()
@@ -54,6 +59,7 @@ import org.json.JSONObject
         PullToRefreshBox(refreshing, vm::refresh, Modifier.fillMaxSize()) {
             LazyColumn(Modifier.fillMaxSize(), state = listState) { items(state.packets, key = { it.id }) { packet ->
                 val color = when {
+                    packet.hasOneByteRoute() -> OneByteRouteColor
                     packet.trackedRelations.replyKeys.isNotEmpty() -> Color(0xFFF0A84B)
                     packet.ownTraffic -> MaterialTheme.colorScheme.primary
                     packet.possibleOwnTraffic -> Color(0xFFF0A84B)
@@ -62,6 +68,8 @@ import org.json.JSONObject
                 Column(Modifier.fillMaxWidth().clickable { selected = packet }.padding(horizontal = 16.dp, vertical = 10.dp)) {
                     Row { Text(packet.time, color = color, fontFamily = FontFamily.Monospace, fontSize = 13.sp); Spacer(Modifier.weight(1f)); Text(packet.typeLabel, color = color, fontSize = 13.sp) }
                     Text(liveIdentityLabel(packet), color = color, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    if (packet.hasOneByteRoute()) Text("1 byte", color = OneByteRouteColor,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
                     TrackedNameText(packet.detail, config.ownNodeNames, color = color.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp))
                     val matches = packet.trackedRelations.labels()
                     packet.observationDetails?.routes.orEmpty().flatMap { it.path }.distinct().filter { hash ->
@@ -100,6 +108,7 @@ import org.json.JSONObject
         ProvideTextStyle(MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)) {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Text("${packet.typeLabel} · ${packet.time}") }
+            if (packet.hasOneByteRoute()) item { Text("1 byte", color = OneByteRouteColor) }
             if (packet.payloadType == 5) {
                 val channel = decoded?.optString("channel").orEmpty()
                 val sender = decoded?.optString("sender").orEmpty()

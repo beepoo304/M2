@@ -30,6 +30,42 @@ M² is a compact Android monitor for the public MeshCore live network. It turns 
 
 Private channel keys are stored with Android Keystore-backed encryption. M² reads the public live API directly and does not require MQTT credentials.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/live-log.png" width="200" alt="Live log">
+  <img src="docs/screenshots/map-tracking.png" width="200" alt="Map tracking">
+  <img src="docs/screenshots/channels.png" width="200" alt="Channels">
+  <img src="docs/screenshots/settings-api.png" width="200" alt="Settings">
+</p>
+
+<details>
+<summary>More screenshots</summary>
+
+<p align="center">
+  <img src="docs/screenshots/splash.png" width="200" alt="Splash screen">
+  <img src="docs/screenshots/live-log-2.png" width="200" alt="Live log">
+  <img src="docs/screenshots/my-log.png" width="200" alt="My devices log">
+  <img src="docs/screenshots/channels-2.png" width="200" alt="Channels and statistics">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/map-tracking-2.png" width="200" alt="Map tracking with replies">
+  <img src="docs/screenshots/map-zoom.png" width="200" alt="Map zoomed in">
+  <img src="docs/screenshots/settings-about.png" width="200" alt="Settings and version">
+  <img src="docs/screenshots/guide-colors.png" width="200" alt="Guide: colors">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/guide-live-status.png" width="200" alt="Guide: live status">
+  <img src="docs/screenshots/guide-traffic.png" width="200" alt="Guide: traffic mode">
+  <img src="docs/screenshots/guide-map.png" width="200" alt="Guide: map">
+  <img src="docs/screenshots/guide-notes.png" width="200" alt="Guide: notes">
+  <img src="docs/screenshots/guide-notes-2.png" width="200" alt="Guide: notes">
+</p>
+
+</details>
+
 ## Download
 
 Install the newest APK from the repository's **Releases** page. Android may ask you to allow installation from your browser or file manager.
@@ -65,6 +101,8 @@ Select a saved **LIVE API** in Settings. M² keeps the latest 250 outage records
 4. Approve Android's screen-capture prompt. M² opens the full-screen map and starts the flight from the first repeater.
 5. The blue line follows the longest unambiguous route. Only the current segment's hop badges and distance remain visible; older badges fade out. The total route distance appears together with the final hop badge. At the end, only the total distance badge remains over the map.
 6. When the flight ends, choose **YES** to save the MP4 in the export folder configured under **Settings**. The default location is `Download/M2`.
+
+**Example:** [longest-route flight recording (MP4, 74 MB)](https://github.com/beepoo304/M2/releases/download/v0.1.14/M2-longest-route-flight.mp4).
 
 Only devices with valid coordinates can be placed on the map. A known repeater without GPS keeps its original hop position and is represented by the purple shortcut; its missing distances are excluded from the total. The flight shows **NO GPS RPT** at that segment. Unrecognised intermediate hashes do not create invented links or flights across a gap.
 
